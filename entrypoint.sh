@@ -29,14 +29,26 @@ EOF
     exit 1
 fi
 
-# Render keeps environment references in its deployment template. Local
-# Compose generates and validates its initial config through Python instead.
+# Render and Koyeb keep environment references in their deployment templates.
+# Local Compose generates and validates its initial config through Python instead.
+# Koyeb publishes KOYEB_PUBLIC_DOMAIN to every web service, so it identifies the
+# platform on its own; KOYEB=true selects the same template explicitly. The
+# templates ship in the image code dir; NANOBOT_CONFIG_TEMPLATE_DIR points the
+# entrypoint at a different copy.
+template_dir="${NANOBOT_CONFIG_TEMPLATE_DIR:-/app}"
+template=""
 if [ "$RENDER" = "true" ]; then
+    template=render-config.json
+elif [ "$KOYEB" = "true" ] || [ -n "$KOYEB_PUBLIC_DOMAIN" ]; then
+    template=koyeb-config.json
+fi
+
+if [ -n "$template" ]; then
     config="$dir/config.json"
     mkdir -p "$dir" || exit 1
     if [ ! -f "$config" ]; then
-        echo "[entrypoint] initializing $config from render-config.json"
-        cp /app/render-config.json "$config" || exit 1
+        echo "[entrypoint] initializing $config from $template"
+        cp "$template_dir/$template" "$config" || exit 1
     else
         echo "[entrypoint] existing $config found — leaving it in place"
     fi

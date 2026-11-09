@@ -49,6 +49,12 @@ RUN for channel in $(printf '%s' "$NANOBOT_CHANNELS" | tr ',' ' '); do \
 # won't shadow it. Only used when RENDER=true; ignored by local runs.
 COPY render-config.json ./
 
+# Koyeb deploy template (see koyeb-compose.yaml): same shape as the Render
+# template, plus the platform-provided ${PORT} and ${KOYEB_PUBLIC_DOMAIN}. The
+# edge terminates TLS and does not forward x-forwarded-proto, so publicWsUrl
+# pins the browser-facing wss:// endpoint instead of deriving it from headers.
+COPY koyeb-config.json ./
+
 RUN useradd -m -u 1000 -s /bin/bash nanobot && \
     mkdir -p /home/nanobot/.nanobot && \
     chown -R nanobot:nanobot /home/nanobot /app/.venv

@@ -26,6 +26,8 @@ def selected(result):
         ("Dockerfile", {"docker"}),
         ("entrypoint.sh", {"docker"}),
         ("render.yaml", {"python"}),
+        ("koyeb-compose.yaml", {"python"}),
+        ("koyeb-config.json", {"docker"}),
         ("tests/test_docker_config.py", {"python", "docker"}),
         ("tests/test_docker_smoke.py", {"python", "docker"}),
         ("tests/test_docker.sh", {"docker"}),

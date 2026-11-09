@@ -40,8 +40,9 @@ RULES = (
       "scripts/build*"), ALL, "cross-domain dependency, build or installation contract"),
     (("tests/test_docker*.py",), PYTHON | DOCKER, "Docker Python regression tests"),
     (("render.yaml",), PYTHON, "Render Blueprint startup contract"),
+    (("koyeb-compose.yaml",), PYTHON, "Koyeb deployment descriptor startup contract"),
     (("Dockerfile", "Dockerfile.*", ".dockerignore", "docker-compose*.yml", "entrypoint.sh",
-      "render-config.json", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md",
+      "render-config.json", "koyeb-config.json", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md",
       "tests/test_docker*", "scripts/docker_compose_smoke.py"), DOCKER, "Docker input or acceptance"),
     # Shared fixture consumers live in tests/webui and webui/src/tests; the
     # SQLite migration and release-trust fixtures have separate Python owners.

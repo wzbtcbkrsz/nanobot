@@ -372,6 +372,18 @@ Deploy nanobot's gateway and bundled WebUI from the repository's ready-to-use Bl
 
 Render will ask for `ANTHROPIC_API_KEY` and a private `NANOBOT_WEB_TOKEN`, then provision persistent storage for sessions, memory, and WebUI history. Persistent disks require a paid Render service.
 
+**Koyeb**
+
+Deploy the same image to Koyeb as a web service with the repository's deployment descriptor:
+
+```bash
+koyeb secrets create anthropic-api-key --value "$ANTHROPIC_API_KEY"
+koyeb secrets create nanobot-web-token --value "$(openssl rand -hex 32)"
+koyeb compose ./koyeb-compose.yaml
+```
+
+Koyeb builds the image from this repository, routes the public domain to the bundled WebUI, and terminates TLS at the edge. See the [Koyeb deployment notes](./docs/deployment.md#koyeb) for persistent volumes and troubleshooting.
+
 **Self-host**
 
 Prefer your own infrastructure? Follow the [deployment guide](./docs/deployment.md) for Docker, Docker Compose, Linux services, and macOS LaunchAgent setup.

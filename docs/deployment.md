@@ -23,6 +23,7 @@ Restart the deployed process after editing `config.json`. Long-running processes
 | Runtime | Use it for | State location | Useful first command |
 |---|---|---|---|
 | Render | One-click hosted gateway and WebUI | Persistent disk at `/home/nanobot/.nanobot` | [Deploy to Render](#render) |
+| Koyeb | Hosted gateway and WebUI behind Koyeb's edge | Volume at `/home/nanobot/.nanobot` | [Deploy to Koyeb](#koyeb) |
 | Docker Compose | Repeatable container runs on Linux servers or workstations | Bind-mount `~/.nanobot` to `/home/nanobot/.nanobot` | `docker compose run --rm nanobot-cli agent -m "Hello!"` |
 | Docker CLI | Manual container testing or small one-off hosts | Bind-mount `~/.nanobot` to `/home/nanobot/.nanobot` | `docker run -v ~/.nanobot:/home/nanobot/.nanobot --rm nanobot status` |
 | systemd user service | Linux user-level gateway that restarts automatically | Host user's `~/.nanobot` unless you pass explicit paths | `systemctl --user status nanobot-gateway` |
@@ -55,6 +56,51 @@ The Blueprint disables automatic deploys so upstream repository changes do not u
 The persistent disk keeps `config.json`, sessions, memory, WebUI history, cron state, media, and logs across restarts and updates. The deployment initializes `config.json` only when it does not already exist, so settings changed later in the WebUI are not replaced on every boot.
 
 If deployment fails, open the service **Logs** page first. A missing model key fails provider requests after startup, while an incorrect Web token leaves you on the authentication page.
+
+## Koyeb
+
+Run nanobot online on Koyeb as a web service. The deployment descriptor builds the image from this repository, routes the public domain to the WebUI, and keeps the gateway in the foreground.
+
+> [!IMPORTANT]
+> Create the two secrets the descriptor references before deploying: `ANTHROPIC_API_KEY` for the model API and `NANOBOT_WEB_TOKEN` as the password for the public WebUI. Generate the web token with `openssl rand -hex 32` and keep it private.
+
+[Review the deployment descriptor](../koyeb-compose.yaml)
+
+### First Deployment
+
+1. Install the [Koyeb CLI](https://www.koyeb.com/docs/build-and-deploy/cli/installation) and authenticate with `koyeb login`.
+2. Create the secrets: `koyeb secrets create anthropic-api-key --value "$ANTHROPIC_API_KEY"` and `koyeb secrets create nanobot-web-token --value "$(openssl rand -hex 32)"`.
+3. Run `koyeb compose ./koyeb-compose.yaml` from a clone of this repository. Koyeb builds the image from the GitHub source named in the descriptor, so the first build compiles the WebUI and can take several minutes.
+4. Open the generated `https://<app>-<organization>-<hash>.koyeb.app` URL. The **Authentication required** page means the gateway is running: enter the `NANOBOT_WEB_TOKEN` value to open the WebUI.
+
+The model API key is used by nanobot to call Anthropic. The web token only protects access to this deployment; do not share it in issues, screenshots, or chat.
+
+To deploy a prebuilt image instead of building from the repository, replace the `git` block of the descriptor with `docker: {image: <registry>/<image>:<tag>}` and keep the entrypoint, command, ports, and routes unchanged. The same settings apply when you create the service in the control panel: a **Web** service, the Docker command `gateway` with the image entrypoint left in place, port `8765` with the HTTP protocol, the route `/`, an HTTP health check on `/`, and the `ANTHROPIC_API_KEY` and `NANOBOT_WEB_TOKEN` environment variables.
+
+### Ports, TLS, and the WebSocket URL
+
+Koyeb always defines `PORT` for web services, so the WebUI channel binds to `${PORT}` instead of a hard-coded port. Koyeb terminates TLS at the edge and forwards `x-forwarded-for` and `x-forwarded-host`, but it does not forward `x-forwarded-proto`. The template therefore pins `channels.websocket.publicWsUrl` to `wss://${KOYEB_PUBLIC_DOMAIN}/`; without it the WebUI would offer the browser a plaintext `ws://` socket on an HTTPS page. Replace that value with your own `wss://` endpoint when you serve nanobot from a custom domain.
+
+The image selects the Koyeb template on its own, through the `KOYEB_PUBLIC_DOMAIN` variable the platform publishes to every web service. `KOYEB=true` selects the same template explicitly.
+
+Route `/` to the WebUI port. Koyeb strips the route prefix from incoming requests, so a subpath route would move the WebSocket upgrade path away from the path configured in `channels.websocket.path`.
+
+### Persistent Data
+
+Sessions, memory, WebUI history, cron state, and logs live in `/home/nanobot/.nanobot`. Without a volume, Koyeb discards them whenever the instance is replaced. Koyeb volumes are regional, work with a single replica, and are only available in the `was` and `fra` regions:
+
+```bash
+koyeb volumes create nanobot-data --region fra --size 5
+koyeb services update nanobot/nanobot --volumes nanobot-data:/home/nanobot/.nanobot
+```
+
+The volume must sit in the same region as the service, so keep the `fra` region of the descriptor when you attach one. The deployment initializes `config.json` only when it does not already exist, so settings changed later in the WebUI are not replaced on every boot.
+
+### Updates and Troubleshooting
+
+Deployments from a public repository do not redeploy automatically, so update the service with `koyeb services redeploy nanobot/nanobot` after a new commit; the descriptor keeps that behavior explicit so an upstream commit never restarts a live agent. The deployment initializes `config.json` only when it is missing, and the volume keeps everything else, so a redeploy preserves your settings and history.
+
+Read the service logs with `koyeb services logs nanobot/nanobot`. A missing model key fails provider requests after startup, while an incorrect web token leaves you on the authentication page. The instance type in the descriptor is `micro` (512 MB); use `small` or larger when you enable extra channels or keep long conversations.
 
 ## Docker
 

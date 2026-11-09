@@ -1,0 +1,68 @@
+# Koyeb deployment descriptor for the nanobot gateway and its bundled WebUI.
+#
+#   koyeb compose ./koyeb-compose.yaml
+#
+# The service runs the image entrypoint, which prepares the data directory, drops
+# privileges, seeds config.json from koyeb-config.json on first boot, and runs
+# `nanobot gateway` in the foreground. Koyeb terminates TLS at the edge and
+# routes the public domain to the WebUI/WebSocket port, so the browser talks
+# https:// and wss:// to the same origin.
+#
+# Create the two secrets referenced below before deploying:
+#
+#   koyeb secrets create anthropic-api-key --value "$ANTHROPIC_API_KEY"
+#   koyeb secrets create nanobot-web-token --value "$(openssl rand -hex 32)"
+#
+# Sessions, memory, and WebUI history live in /home/nanobot/.nanobot. Attach a
+# volume there to keep them across deployments; see docs/deployment.md.
+app:
+  name: nanobot
+
+services:
+  - definition:
+      name: nanobot
+      type: WEB
+      git:
+        repository: github.com/HKUDS/nanobot
+        branch: main
+        # Koyeb disables automatic deployments for public repositories. Keep
+        # that explicit so an upstream commit never restarts a live agent.
+        no_deploy_on_push: true
+        docker:
+          dockerfile: ./Dockerfile
+          # Keep the image entrypoint (it prepares the data directory, drops
+          # privileges, and seeds the config) and replace the default
+          # `webui --yes --no-open` command with the foreground gateway.
+          entrypoint: ["/usr/local/bin/entrypoint.sh"]
+          command: gateway
+      regions:
+        - fra
+      instance_types:
+        - scopes: ['region:fra']
+          type: 'micro'
+      scalings:
+        - scopes: ['region:fra']
+          min: 1
+          max: 1
+      ports:
+        - port: 8765
+          protocol: http
+      routes:
+        - port: 8765
+          path: "/"
+      health_checks:
+        - http:
+            port: 8765
+            path: "/"
+          grace_period: 60
+          interval: 30
+          timeout: 5
+          restart_limit: 3
+      env:
+        # Anthropic API key — powers the agent's LLM calls.
+        - key: ANTHROPIC_API_KEY
+          value: "{{secret.anthropic-api-key}}"
+        # WebUI access secret — the gate for the public WebUI. Keep it private;
+        # this is the password the browser asks for.
+        - key: NANOBOT_WEB_TOKEN
+          value: "{{secret.nanobot-web-token}}"
