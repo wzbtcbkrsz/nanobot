@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
 if TYPE_CHECKING:
     from loguru import Record
+
+DEFAULT_LOG_LEVEL = "INFO"
+LOG_LEVEL_ENV = "NANOBOT_LOG_LEVEL"
 
 LOG_FORMAT = (
     "<green>{time:YYYY-MM-DDTHH:mm:ss.SSSZZ}</green> | "
@@ -41,7 +45,7 @@ def prepare_log_record(record: "Record") -> bool:
     return True
 
 
-def add_console_log_sink(stream: Any, *, level: str = "INFO") -> int:
+def add_console_log_sink(stream: Any, *, level: str = DEFAULT_LOG_LEVEL) -> int:
     """Add the standard nanobot console sink and return its handler id."""
     return logger.add(
         stream,
@@ -52,7 +56,13 @@ def add_console_log_sink(stream: Any, *, level: str = "INFO") -> int:
     )
 
 
-def configure_console_logging(stream: Any, *, level: str = "INFO") -> int:
-    """Replace existing handlers with the standard nanobot console sink."""
+def configure_console_logging(stream: Any, *, level: str | None = None) -> int:
+    """Replace existing handlers with the standard nanobot console sink.
+
+    An explicit level takes precedence; otherwise `NANOBOT_LOG_LEVEL` selects
+    the console level, falling back to the historical INFO default.
+    """
     logger.remove()
-    return add_console_log_sink(stream, level=level)
+    return add_console_log_sink(
+        stream, level=level or os.environ.get(LOG_LEVEL_ENV, DEFAULT_LOG_LEVEL)
+    )

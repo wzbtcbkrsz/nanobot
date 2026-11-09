@@ -66,8 +66,14 @@ ENV HOME=/home/nanobot
 # Ensure crash output reaches Render logs (app output is otherwise swallowed on
 # non-graceful exit).
 ENV PYTHONUNBUFFERED=1 PYTHONFAULTHANDLER=1
+# Keep container logs quiet: only WARNING/ERROR/CRITICAL reach stderr. Outside
+# the image the console level stays INFO, and --verbose still selects DEBUG.
+ENV NANOBOT_LOG_LEVEL=WARNING
 
 EXPOSE 18790 8765
 
 ENTRYPOINT ["entrypoint.sh"]
-CMD ["status"]
+# Start the WebUI and its gateway in the foreground. --yes skips the first-run
+# prompt when there is no TTY; --no-open avoids a browser in the headless
+# container and prints the signed login link to the container logs instead.
+CMD ["webui", "--yes", "--no-open"]
