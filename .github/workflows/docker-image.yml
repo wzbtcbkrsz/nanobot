@@ -1,0 +1,217 @@
+name: Build and Push Docker Image
+
+# Build preparation and publication are separate decisions. There is no schedule,
+# tag-push trigger or PR token: only a reviewed manual dispatch runs this workflow,
+# and the image reaches GHCR only when push_image is explicitly set to true. With
+# push_image=false it builds (and, for a single platform, smoke-tests) the exact
+# Dockerfile without writing to any registry. Defining this workflow does not
+# grant publication rights; an administrator may additionally protect the run with
+# a required-review environment before enabling publication.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Source ref to build (branch, tag or full SHA; defaults to the dispatch ref)
+        required: false
+        type: string
+        default: ''
+      image_name:
+        description: Target GHCR image (defaults to ghcr.io/<owner>/<repo>; only ghcr.io/ names are accepted)
+        required: false
+        type: string
+        default: ''
+      version_tag:
+        description: Image version tag, e.g. 0.4.1 (defaults to sha-<short commit>)
+        required: false
+        type: string
+        default: ''
+      tag_latest:
+        description: Also tag the image as latest (only takes effect when publishing)
+        required: false
+        type: boolean
+        default: false
+      channels:
+        description: NANOBOT_CHANNELS build arg, comma-separated (Dockerfile default is whatsapp)
+        required: false
+        type: string
+        default: 'whatsapp'
+      extras:
+        description: NANOBOT_EXTRAS build arg, comma-separated (default is empty)
+        required: false
+        type: string
+        default: ''
+      platforms:
+        description: Comma-separated target platforms (linux/amd64 and/or linux/arm64)
+        required: false
+        type: string
+        default: 'linux/amd64'
+      push_image:
+        description: Authorize publishing the built image to GHCR (false builds and verifies only)
+        required: true
+        type: boolean
+        default: false
+
+# No token permissions at workflow level; the build job requests only what it needs.
+permissions: {}
+
+concurrency:
+  # Never cancel an in-flight publication; concurrent runs of the same ref are
+  # serialized so a later build cannot race an earlier push.
+  group: build-push-docker-image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build image
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write # GHCR login/push; only exercised when push_image is true
+
+    steps:
+      - name: Check out the requested source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          persist-credentials: false
+
+      - name: Resolve image identity and validate inputs
+        id: identity
+        shell: bash
+        env:
+          IMAGE_NAME: ${{ inputs.image_name }}
+          VERSION_TAG: ${{ inputs.version_tag }}
+          CHANNELS: ${{ inputs.channels }}
+          EXTRAS: ${{ inputs.extras }}
+          PLATFORMS: ${{ inputs.platforms }}
+        run: |
+          set -euo pipefail
+
+          # Build args and platforms go to Docker as data, never into a shell
+          # command. Keep them to a safe, explicit character set.
+          [[ "$CHANNELS" =~ ^[0-9A-Za-z_,.-]+$ ]] || {
+            echo "::error::Invalid channels build arg: $CHANNELS"; exit 1; }
+          [[ -z "$EXTRAS" || "$EXTRAS" =~ ^[0-9A-Za-z_,.-]+$ ]] || {
+            echo "::error::Invalid extras build arg: $EXTRAS"; exit 1; }
+
+          IFS=',' read -ra targets <<< "$PLATFORMS"
+          for target in "${targets[@]}"; do
+            case "$target" in
+              linux/amd64|linux/arm64) ;;
+              *) echo "::error::Unsupported platform: $target"; exit 1 ;;
+            esac
+          done
+
+          # Docker tags allow [A-Za-z0-9_][A-Za-z0-9._-]{0,127}. Normalize a
+          # release tag such as v0.4.1 to the bare version.
+          version="$VERSION_TAG"
+          [[ "$version" =~ ^v([0-9]+\.[0-9]+\.[0-9]+.*)$ ]] && version="${BASH_REMATCH[1]}"
+          if [[ -z "$version" ]]; then
+            version="sha-$(git rev-parse --short=12 HEAD)"
+          fi
+          [[ "$version" =~ ^[0-9A-Za-z_][0-9A-Za-z._-]{0,127}$ ]] || {
+            echo "::error::Invalid image version tag: $version"; exit 1; }
+
+          # GHCR requires a lowercase repository path. Only ghcr.io targets are
+          # accepted so the workflow never publishes to an unrelated registry.
+          image="${IMAGE_NAME:-ghcr.io/$GITHUB_REPOSITORY}"
+          image="${image,,}"
+          [[ "$image" =~ ^ghcr\.io/[a-z0-9][a-z0-9._-]*(/[a-z0-9][a-z0-9._-]*)+$ ]] || {
+            echo "::error::Invalid GHCR image name: $image"; exit 1; }
+
+          {
+            echo "image=$image"
+            echo "version=$version"
+            echo "revision=$(git rev-parse HEAD)"
+            echo "single_platform=$([[ ${#targets[@]} -eq 1 ]] && echo true || echo false)"
+          } >> "$GITHUB_OUTPUT"
+          echo "Building $image:$version from $(git rev-parse HEAD)"
+
+      - name: Set up QEMU
+        if: contains(inputs.platforms, 'linux/arm64')
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.identity.outputs.image }}
+          tags: |
+            type=raw,value=${{ steps.identity.outputs.version }}
+            type=raw,value=latest,enable=${{ inputs.tag_latest && inputs.push_image }}
+          labels: |
+            org.opencontainers.image.revision=${{ steps.identity.outputs.revision }}
+            org.opencontainers.image.version=${{ steps.identity.outputs.version }}
+
+      - name: Log in to GHCR
+        if: ${{ inputs.push_image }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build Docker image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: ${{ inputs.push_image }}
+          # load makes the image available for the local smoke test; it is not
+          # supported for multi-platform builds, so those are build-only unless
+          # they are published.
+          load: ${{ !inputs.push_image && steps.identity.outputs.single_platform == 'true' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: ${{ inputs.platforms }}
+          build-args: |
+            NANOBOT_CHANNELS=${{ inputs.channels }}
+            NANOBOT_EXTRAS=${{ inputs.extras }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Verify the built image
+        if: ${{ !inputs.push_image && steps.identity.outputs.single_platform == 'true' }}
+        shell: bash
+        env:
+          IMAGE: ${{ fromJSON(steps.meta.outputs.json).tags[0] }}
+          CHANNELS: ${{ inputs.channels }}
+        run: |
+          set -euo pipefail
+          docker image inspect "$IMAGE" >/dev/null
+          docker run --rm --entrypoint python "$IMAGE" -c "import nanobot, sys; print(sys.version)"
+          if [[ "$CHANNELS" == *whatsapp* ]]; then
+            docker run --rm --entrypoint python "$IMAGE" -c "import neonize, segno"
+          fi
+          # Mirror CI's privilege boundary: the non-root runtime user may write
+          # only its venv, not the application code.
+          docker run --rm --user 1000:1000 --entrypoint sh "$IMAGE" -c \
+            'test "$(id -u)" = 1000 && test -w /app/.venv && test ! -w /app && test ! -w /app/nanobot'
+
+      - name: Report
+        if: always()
+        shell: bash
+        env:
+          IMAGE: ${{ steps.identity.outputs.image }}
+          VERSION: ${{ steps.identity.outputs.version }}
+          REVISION: ${{ steps.identity.outputs.revision }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+          PUSHED: ${{ inputs.push_image }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          {
+            echo "### Build and Push Docker Image"
+            echo ""
+            echo "- Image: \`$IMAGE\`"
+            echo "- Version tag: \`$VERSION\`"
+            echo "- Source: \`$REVISION\`"
+            echo "- Pushed to registry: \`$PUSHED\`"
+            echo "- Tags:"
+            printf '%s\n' "$TAGS" | sed '/^$/d; s/^/  - `/; s/$/`/'
+            if [[ -n "$DIGEST" ]]; then echo "- Digest: \`$DIGEST\`"; fi
+          } >> "$GITHUB_STEP_SUMMARY"
