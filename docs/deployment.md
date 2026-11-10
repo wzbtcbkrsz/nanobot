@@ -75,7 +75,7 @@ Run nanobot online on Koyeb as a web service. The deployment descriptor builds t
 
 The model API key is used by nanobot to call Anthropic. The web token only protects access to this deployment; do not share it in issues, screenshots, or chat.
 
-To deploy a prebuilt image instead of building from the repository, replace the `git` block of the descriptor with `docker: {image: <registry>/<image>:<tag>}` and keep the entrypoint, command, ports, and routes unchanged. The same settings apply when you create the service in the control panel: a **Web** service, the Docker command `gateway` with the image entrypoint left in place, port `8765` with the HTTP protocol, the route `/`, an HTTP health check on `/`, and the `ANTHROPIC_API_KEY` and `NANOBOT_WEB_TOKEN` environment variables.
+To deploy a prebuilt image instead of building from the repository, replace the `git` block of the descriptor with `docker: {image: <registry>/<image>:<tag>}` and keep the entrypoint, command, ports, and routes unchanged. The same settings apply when you create the service in the control panel: a **Web** service, port `8765` with the HTTP protocol, the route `/`, a TCP health check on `8765`, and the two environment variables below. Leave the Docker command empty — the entrypoint replaces the image's interactive `webui` default with the foreground `gateway` — or set it to `gateway` explicitly.
 
 ### Ports, TLS, and the WebSocket URL
 
@@ -95,6 +95,14 @@ koyeb services update nanobot/nanobot --volumes nanobot-data:/home/nanobot/.nano
 ```
 
 The volume must sit in the same region as the service, so keep the `fra` region of the descriptor when you attach one. The deployment initializes `config.json` only when it does not already exist, so settings changed later in the WebUI are not replaced on every boot.
+
+### Health Checks
+
+A healthy start logs `initializing /home/nanobot/.nanobot/config.json from koyeb-config.json` and then `WebSocket server listening on ws://0.0.0.0:8765/`. The health check probes that socket from outside the container, so the `0.0.0.0` bind matters.
+
+If Koyeb reports `TCP health check failed on port 8765` while the container logs look normal and show `WebUI ready` with a `http://127.0.0.1:8765` link, the image is running its interactive `webui` launcher instead of the gateway. That launcher binds the WebSocket channel to `127.0.0.1` for a local desktop session and probes itself over loopback, so `WebUI ready` says nothing about reachability from the edge. It also means the Koyeb config template was not applied — usually an image built before Koyeb support was added. Rebuild the image from the current Dockerfile and redeploy; Koyeb injects `KOYEB_PUBLIC_DOMAIN` into web services automatically, and `KOYEB=true` forces the same template when you supply that variable yourself. The WebUI is reached through the public domain, not the loopback link that `webui` prints.
+
+Both `ANTHROPIC_API_KEY` and `NANOBOT_WEB_TOKEN` must be set before the first start. The seeded config keeps them as `${VAR}` references, so either one missing aborts startup with "missing environment variable reference(s)".
 
 ### Updates and Troubleshooting
 

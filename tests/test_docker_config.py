@@ -23,7 +23,7 @@ def _initialize(path: Path, web_token: str = "", api_key: str = "") -> subproces
     )
 
 
-def _entrypoint_run(tmp_path, *, env=None, existing=None):
+def _entrypoint_run(tmp_path, *, env=None, existing=None, args=("gateway",)):
     """Run the container entrypoint with an isolated HOME and a stub nanobot."""
     home = tmp_path / "home"
     (home / ".nanobot").mkdir(parents=True)
@@ -47,7 +47,7 @@ def _entrypoint_run(tmp_path, *, env=None, existing=None):
     }
     environment.update(env or {})
     result = subprocess.run(
-        ["sh", str(ROOT / "entrypoint.sh"), "gateway"],
+        ["sh", str(ROOT / "entrypoint.sh"), *args],
         env=environment, capture_output=True, text=True,
     )
     return result, config, recorded
@@ -69,7 +69,7 @@ def test_koyeb_descriptor_serves_the_webui_on_one_public_port():
     assert docker["command"] == "gateway"
     port = definition["ports"][0]["port"]
     assert definition["routes"] == [{"port": port, "path": "/"}]
-    assert definition["health_checks"][0]["http"] == {"port": port, "path": "/"}
+    assert definition["health_checks"][0]["tcp"] == {"port": port}
     assert {entry["key"] for entry in definition["env"]} == {"ANTHROPIC_API_KEY", "NANOBOT_WEB_TOKEN"}
 
 
@@ -121,6 +121,34 @@ def test_entrypoint_keeps_an_existing_platform_config(tmp_path):
     assert config.read_text(encoding="utf-8") == '{"kept": true}'
     assert "existing" in result.stdout
     assert recorded.read_text(encoding="utf-8").splitlines() == ["gateway", "--config", str(config)]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the container entrypoint is a POSIX shell script")
+@pytest.mark.skipif(
+    getattr(os, "geteuid", lambda: 0)() == 0,
+    reason="a root start takes the privilege-drop path instead of the seeding path",
+)
+def test_entrypoint_runs_foreground_gateway_for_default_platform_command(tmp_path):
+    result, config, recorded = _entrypoint_run(
+        tmp_path, env={"KOYEB": "true"}, args=("webui", "--yes", "--no-open"),
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert recorded.read_text(encoding="utf-8").splitlines() == ["gateway", "--config", str(config)]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the container entrypoint is a POSIX shell script")
+@pytest.mark.skipif(
+    getattr(os, "geteuid", lambda: 0)() == 0,
+    reason="a root start takes the privilege-drop path instead of the seeding path",
+)
+def test_entrypoint_keeps_an_explicit_platform_command(tmp_path):
+    result, config, recorded = _entrypoint_run(
+        tmp_path, env={"RENDER": "true"}, args=("gateway", "--verbose"),
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert recorded.read_text(encoding="utf-8").splitlines() == [
+        "gateway", "--verbose", "--config", str(config),
+    ]
 
 
 def test_first_boot_generates_valid_container_config(tmp_path):

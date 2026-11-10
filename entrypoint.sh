@@ -52,6 +52,15 @@ if [ -n "$template" ]; then
     else
         echo "[entrypoint] existing $config found — leaving it in place"
     fi
+    # The image default CMD (`webui --yes --no-open`) owns a local desktop
+    # session: it starts a background gateway bound to 127.0.0.1 and waits for
+    # Ctrl+C, so nothing listens on the container interface and the platform
+    # health check cannot reach the port even though `webui` reports "ready".
+    # Hosted web services need the gateway itself in the foreground on 0.0.0.0.
+    # Normalize only the exact default command; an explicit command always wins.
+    if [ "$#" -eq 3 ] && [ "$1" = "webui" ] && [ "$2" = "--yes" ] && [ "$3" = "--no-open" ]; then
+        set -- gateway
+    fi
     set -- "$@" --config "$config"
 elif [ "$NANOBOT_DOCKER_BOOTSTRAP" = "1" ] && { [ "$1" = "gateway" ] || [ "$1" = "serve" ]; }; then
     # Explicit config selectors belong to the CLI; bootstrap only the default instance.

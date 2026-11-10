@@ -82,4 +82,6 @@ ENTRYPOINT ["entrypoint.sh"]
 # Start the WebUI and its gateway in the foreground. --yes skips the first-run
 # prompt when there is no TTY; --no-open avoids a browser in the headless
 # container and prints the signed login link to the container logs instead.
+# On hosted web services (Render/Koyeb) entrypoint.sh swaps this interactive
+# launcher for the foreground `gateway` command, which binds 0.0.0.0.
 CMD ["webui", "--yes", "--no-open"]

@@ -50,10 +50,11 @@ services:
       routes:
         - port: 8765
           path: "/"
+      # A TCP probe matches Koyeb's default and only needs the gateway socket to
+      # be reachable; it does not depend on the bundled WebUI assets or a route.
       health_checks:
-        - http:
+        - tcp:
             port: 8765
-            path: "/"
           grace_period: 60
           interval: 30
           timeout: 5
