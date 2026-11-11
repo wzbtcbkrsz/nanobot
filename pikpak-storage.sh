@@ -60,20 +60,25 @@ pikpak_bootstrap() {
     PIKPAK_SYNC_LOG="$PIKPAK_CONF_DIR/sync.log"
     PIKPAK_ORIGINAL_HOME="$HOME"
 
-    mkdir -p "$PIKPAK_CONF_DIR" "$PIKPAK_CACHE_DIR" "$PIKPAK_LOCAL_ROOT" || return 1
+    # rclone copy does not create the destination when the remote is empty
+    # (first deployment), so make the data dir up front.
+    mkdir -p "$PIKPAK_CONF_DIR" "$PIKPAK_CACHE_DIR" "$PIKPAK_LOCAL_ROOT" "$PIKPAK_DATA_DIR" || return 1
 
     # The pikpak backend requires an obscured password. Keep the plaintext only
     # in PIKPAK_PASSWORD, which the platform injects as an environment variable.
     obscured_pass=$(rclone obscure "$PIKPAK_PASSWORD") || return 1
 
-    # Define the remote entirely through environment variables; the writable
-    # config file only caches the PikPak login token for this container's life.
+    # PikPak needs a real login on first use (device id, captcha token, OAuth
+    # token). `rclone config create` performs it non-interactively and writes
+    # those values into the config file. Defining the remote with only
+    # RCLONE_CONFIG_PIKPAK_* env vars skips that login, and rclone then fails
+    # with "empty token found - please run rclone config reconnect". Suppress
+    # the output: it contains the freshly issued token.
     export RCLONE_CONFIG="$PIKPAK_CONF"
     export RCLONE_CACHE_DIR="$PIKPAK_CACHE_DIR"
-    export RCLONE_CONFIG_PIKPAK_TYPE=pikpak
-    export RCLONE_CONFIG_PIKPAK_USER="$PIKPAK_USER"
-    export RCLONE_CONFIG_PIKPAK_PASS="$obscured_pass"
-    rclone config touch >/dev/null 2>&1 || true
+    rm -f "$PIKPAK_CONF" || return 1
+    rclone config create pikpak pikpak user "$PIKPAK_USER" pass "$obscured_pass" \
+        >/dev/null 2>&1 || return 1
 
     # rclone copy fails when the remote path does not exist, which is the normal
     # state on the very first deployment. mkdir is idempotent; ignore its error.
