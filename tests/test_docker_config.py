@@ -70,9 +70,16 @@ def test_koyeb_descriptor_serves_the_webui_on_one_public_port():
     port = definition["ports"][0]["port"]
     assert definition["routes"] == [{"port": port, "path": "/"}]
     assert definition["health_checks"][0]["tcp"] == {"port": port}
-    assert {entry["key"] for entry in definition["env"]} == {
+    # The PikPak pull happens before the gateway binds; a short grace period
+    # fails the probe and restarts into another slow pull.
+    assert definition["health_checks"][0]["grace_period"] == 300
+    assert definition["health_checks"][0]["restart_limit"] == 5
+    env = {entry["key"]: entry["value"] for entry in definition["env"]}
+    assert set(env) == {
         "ANTHROPIC_API_KEY", "NANOBOT_WEB_TOKEN", "PIKPAK_USER", "PIKPAK_PASSWORD",
+        "PIKPAK_SYNC_INTERVAL",
     }
+    assert env["PIKPAK_SYNC_INTERVAL"] == "300"
 
 
 def test_koyeb_config_template_binds_the_public_websocket_endpoint(monkeypatch):
@@ -210,7 +217,11 @@ def test_entrypoint_points_home_at_pikpak_storage(tmp_path):
         "gateway", "--config", str(config), str(pikpak_root),
     ]
     assert (home / ".nanobot").is_symlink()
-    assert f"copy pikpak:nanobot/.nanobot {pikpak_root}/.nanobot" in calls.read_text(encoding="utf-8")
+    calls_text = calls.read_text(encoding="utf-8")
+    assert f"copy pikpak:nanobot/.nanobot {pikpak_root}/.nanobot --exclude /logs/**" in calls_text
+    # The final upload after the gateway exits must use the same filter, or
+    # logs would creep back into the persistent store on every shutdown.
+    assert f"copy {pikpak_root}/.nanobot pikpak:nanobot/.nanobot --exclude /logs/**" in calls_text
 
 
 def test_first_boot_generates_valid_container_config(tmp_path):

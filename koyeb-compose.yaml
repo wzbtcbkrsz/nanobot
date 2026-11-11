@@ -55,13 +55,18 @@ services:
           path: "/"
       # A TCP probe matches Koyeb's default and only needs the gateway socket to
       # be reachable; it does not depend on the bundled WebUI assets or a route.
+      # The PikPak-backed store pulls the whole .nanobot dir (and logs in to the
+      # remote) before the gateway binds, so a cold start can take minutes once
+      # sessions and media have accumulated. A short grace period then fails the
+      # probe, restarts into another slow pull, and loops until the instance is
+      # replaced. Leave enough time for that pull and tolerate a few failures.
       health_checks:
         - tcp:
             port: 8765
-          grace_period: 60
+          grace_period: 300
           interval: 30
           timeout: 5
-          restart_limit: 3
+          restart_limit: 5
       env:
         # Anthropic API key — powers the agent's LLM calls.
         - key: ANTHROPIC_API_KEY
@@ -75,3 +80,8 @@ services:
           value: "{{secret.pikpak-user}}"
         - key: PIKPAK_PASSWORD
           value: "{{secret.pikpak-password}}"
+        # Each upload walks the whole data dir, and a larger remote makes the
+        # next startup pull slower. Keep the interval well above the image's
+        # 30s default on this small instance.
+        - key: PIKPAK_SYNC_INTERVAL
+          value: "300"

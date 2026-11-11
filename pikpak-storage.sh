@@ -17,8 +17,13 @@ pikpak_warn() {
 # Upload local state. Use copy, never sync: a transient local problem must not
 # delete the persistent copy. Local deletions can reappear after a fresh pull;
 # that tradeoff is deliberate for a single-instance free deployment.
+# Logs are excluded from every transfer: they are regenerated on each boot and
+# grow without bound (LLM retries, WebUI traffic), so persisting them only makes
+# the next startup pull slower. The initial pull uses the same filter so logs
+# left on the remote by an older image never come back.
 pikpak_sync_up() {
     rclone copy "$PIKPAK_DATA_DIR" "$PIKPAK_REMOTE_SPEC" \
+        --exclude "/logs/**" \
         --retries 3 --timeout 60s --transfers 4 --checkers 8 \
         --log-level ERROR
 }
@@ -86,6 +91,7 @@ pikpak_bootstrap() {
 
     pikpak_log "pulling $PIKPAK_REMOTE_SPEC into $PIKPAK_DATA_DIR"
     if ! rclone copy "$PIKPAK_REMOTE_SPEC" "$PIKPAK_DATA_DIR" \
+            --exclude "/logs/**" \
             --retries 3 --timeout 60s --transfers 4 --checkers 8 \
             --log-level ERROR; then
         pikpak_warn "initial pull failed — refusing to start with an incomplete data dir"
