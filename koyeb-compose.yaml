@@ -27,10 +27,9 @@ services:
       name: nanobot
       type: WEB
       git:
-        repository: github.com/HKUDS/nanobot
+        repository: github.com/wzbtcbkrsz/nanobot
         branch: main
-        # Koyeb disables automatic deployments for public repositories. Keep
-        # that explicit so an upstream commit never restarts a live agent.
+        # Keep deploys explicit so a push never restarts a live agent.
         no_deploy_on_push: true
         docker:
           dockerfile: ./Dockerfile
