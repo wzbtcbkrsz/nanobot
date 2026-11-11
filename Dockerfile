@@ -1,3 +1,5 @@
+FROM rclone/rclone:1.76.0 AS rclone-bin
+
 FROM node:24-bookworm-slim AS webui-builder
 
 WORKDIR /app
@@ -12,23 +14,15 @@ RUN mkdir -p /app/nanobot/web && npm run build
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 
 # rclone backs the PikPak persistent store for hosts without a durable volume.
-# Pin the release so builds stay reproducible; derive the architecture from the
-# build image so cross-platform builds pick the right binary.
-ARG RCLONE_VERSION=v1.76.0
-RUN set -eu; \
-    apt-get update; \
-    apt-get install -y --no-install-recommends ca-certificates curl git bubblewrap openssh-client libmagic1 unzip; \
-    case "$(dpkg --print-architecture)" in \
-        arm64) rclone_arch=arm64 ;; \
-        armhf) rclone_arch=arm-v7 ;; \
-        *) rclone_arch=amd64 ;; \
-    esac; \
-    curl -fsSL "https://downloads.rclone.org/${RCLONE_VERSION}/rclone-${RCLONE_VERSION}-linux-${rclone_arch}.zip" -o /tmp/rclone.zip; \
-    unzip -j /tmp/rclone.zip '*/rclone' -d /usr/local/bin; \
-    chmod 0755 /usr/local/bin/rclone; \
-    rm -f /tmp/rclone.zip; \
-    rm -rf /var/lib/apt/lists/*; \
-    rclone version
+# Copy the static binary from the official multi-arch image instead of
+# downloading a zip: hosted build sandboxes often cannot reach
+# downloads.rclone.org, and the image tag lets buildx pick the right arch.
+COPY --from=rclone-bin /usr/local/bin/rclone /usr/local/bin/rclone
+RUN chmod 0755 /usr/local/bin/rclone && rclone version
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates curl git bubblewrap openssh-client libmagic1 && \
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
