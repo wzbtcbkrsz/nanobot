@@ -52,6 +52,10 @@ pikpak_bootstrap() {
     PIKPAK_SYNC_INTERVAL="${PIKPAK_SYNC_INTERVAL:-30}"
     PIKPAK_CONF_DIR="${PIKPAK_CONF_DIR:-/tmp/nanobot-pikpak}"
     PIKPAK_SYNC_LOOP="${PIKPAK_SYNC_LOOP:-1}"
+    PIKPAK_PULL_TIMEOUT="${PIKPAK_PULL_TIMEOUT:-60}"
+    # Hosted web services set this to 1 (see entrypoint.sh): the gateway must
+    # bind its health-check port even when the remote store is slow or down.
+    PIKPAK_ALLOW_PARTIAL_START="${PIKPAK_ALLOW_PARTIAL_START:-0}"
 
     if ! command -v rclone >/dev/null 2>&1; then
         pikpak_warn "rclone is not installed — refusing to start without persistent storage"
@@ -90,12 +94,20 @@ pikpak_bootstrap() {
     rclone mkdir "$PIKPAK_REMOTE_SPEC" >/dev/null 2>&1 || true
 
     pikpak_log "pulling $PIKPAK_REMOTE_SPEC into $PIKPAK_DATA_DIR"
-    if ! rclone copy "$PIKPAK_REMOTE_SPEC" "$PIKPAK_DATA_DIR" \
+    # `timeout` is a hard ceiling. rclone's --timeout is per request, and with
+    # --retries a slow or stalled remote can otherwise keep the gateway from
+    # binding for several minutes, which fails the platform health check.
+    if ! timeout "$PIKPAK_PULL_TIMEOUT" rclone copy "$PIKPAK_REMOTE_SPEC" "$PIKPAK_DATA_DIR" \
             --exclude "/logs/**" \
             --retries 3 --timeout 60s --transfers 4 --checkers 8 \
             --log-level ERROR; then
-        pikpak_warn "initial pull failed — refusing to start with an incomplete data dir"
-        return 1
+        if [ "$PIKPAK_ALLOW_PARTIAL_START" != "1" ]; then
+            pikpak_warn "initial pull failed — refusing to start with an incomplete data dir"
+            return 1
+        fi
+        pikpak_warn "initial pull failed or timed out after ${PIKPAK_PULL_TIMEOUT}s — starting the gateway with the platform config template; persistent state may be incomplete"
+        PIKPAK_START_DEGRADED=1
+        export PIKPAK_START_DEGRADED
     fi
 
     chown -R nanobot:nanobot "$PIKPAK_LOCAL_ROOT" "$PIKPAK_CONF_DIR" 2>/dev/null || true

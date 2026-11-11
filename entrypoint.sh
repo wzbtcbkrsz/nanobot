@@ -1,5 +1,23 @@
 #!/bin/sh
 
+# Render and Koyeb keep environment references in their deployment templates.
+# Local Compose generates and validates its initial config through Python instead.
+# Koyeb publishes KOYEB_PUBLIC_DOMAIN to every web service, so it identifies the
+# platform on its own; KOYEB=true selects the same template explicitly. The
+# templates ship in the image code dir; NANOBOT_CONFIG_TEMPLATE_DIR points the
+# entrypoint at a different copy. Resolve the template before the PikPak
+# bootstrap: hosted web services also use it to relax that startup dependency.
+template_dir="${NANOBOT_CONFIG_TEMPLATE_DIR:-/app}"
+template=""
+if [ "$RENDER" = "true" ]; then
+    template=render-config.json
+elif [ "$KOYEB" = "true" ] || [ -n "$KOYEB_PUBLIC_DOMAIN" ]; then
+    template=koyeb-config.json
+fi
+if [ -n "$template" ]; then
+    export PIKPAK_ALLOW_PARTIAL_START=1
+fi
+
 # Optional PikPak-backed persistent storage for hosts without a durable volume.
 # Active only when both credentials are supplied, so existing Render/Koyeb/
 # Compose deployments keep their current disk/volume behaviour unchanged.
@@ -50,24 +68,12 @@ EOF
     exit 1
 fi
 
-# Render and Koyeb keep environment references in their deployment templates.
-# Local Compose generates and validates its initial config through Python instead.
-# Koyeb publishes KOYEB_PUBLIC_DOMAIN to every web service, so it identifies the
-# platform on its own; KOYEB=true selects the same template explicitly. The
-# templates ship in the image code dir; NANOBOT_CONFIG_TEMPLATE_DIR points the
-# entrypoint at a different copy.
-template_dir="${NANOBOT_CONFIG_TEMPLATE_DIR:-/app}"
-template=""
-if [ "$RENDER" = "true" ]; then
-    template=render-config.json
-elif [ "$KOYEB" = "true" ] || [ -n "$KOYEB_PUBLIC_DOMAIN" ]; then
-    template=koyeb-config.json
-fi
-
 if [ -n "$template" ]; then
     config="$dir/config.json"
     mkdir -p "$dir" || exit 1
-    if [ ! -f "$config" ]; then
+    # A degraded PikPak start can leave a partially pulled or stale config, so
+    # reseed the platform template to guarantee the public bind and port.
+    if [ ! -f "$config" ] || [ "$PIKPAK_START_DEGRADED" = "1" ]; then
         echo "[entrypoint] initializing $config from $template"
         cp "$template_dir/$template" "$config" || exit 1
     else

@@ -160,14 +160,8 @@ def test_entrypoint_keeps_an_explicit_platform_command(tmp_path):
     ]
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="the container entrypoint is a POSIX shell script")
-@pytest.mark.skipif(
-    getattr(os, "geteuid", lambda: 0)() == 0,
-    reason="a root start takes the privilege-drop path instead of the seeding path",
-)
-def test_entrypoint_points_home_at_pikpak_storage(tmp_path):
-    """With PikPak credentials set, state is pulled before startup, HOME moves
-    onto the persistent directory, and the conventional data path is linked."""
+def _pikpak_entrypoint_run(tmp_path, *, env=None, pull_fails=False):
+    """Run the entrypoint with PikPak credentials and stubbed rclone/nanobot."""
     home = tmp_path / "home"
     (home / ".nanobot").mkdir(parents=True)
     templates = tmp_path / "templates"
@@ -185,14 +179,23 @@ def test_entrypoint_points_home_at_pikpak_storage(tmp_path):
     nanobot_stub.chmod(0o755)
     calls = tmp_path / "rclone-calls.txt"
     rclone_stub = bindir / "rclone"
+    copy_failure = 'case "$1" in copy) exit 1 ;; esac\n' if pull_fails else ""
     rclone_stub.write_text(
         f'#!/bin/sh\nprintf "%s\\n" "$*" >> "{calls}"\n'
-        'case "$1" in obscure) echo OBSCURED ;; esac\nexit 0\n',
+        'case "$1" in obscure) echo OBSCURED ;; esac\n'
+        + copy_failure
+        + 'exit 0\n',
         encoding="utf-8",
     )
     rclone_stub.chmod(0o755)
 
     pikpak_root = tmp_path / "pikpak-home"
+    if pull_fails:
+        # A partial pull can leave a stale config behind. The hosted path must
+        # reseed the template rather than start the gateway with that config.
+        stale = pikpak_root / ".nanobot" / "config.json"
+        stale.parent.mkdir(parents=True, exist_ok=True)
+        stale.write_text('{"stale": true}', encoding="utf-8")
     environment = {
         "HOME": str(home),
         "PATH": f"{bindir}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
@@ -203,11 +206,25 @@ def test_entrypoint_points_home_at_pikpak_storage(tmp_path):
         "PIKPAK_LOCAL_ROOT": str(pikpak_root),
         "PIKPAK_CONF_DIR": str(tmp_path / "pikpak-conf"),
         "PIKPAK_SYNC_LOOP": "0",
-        "KOYEB": "true",
     }
+    environment.update(env or {})
     result = subprocess.run(
         ["sh", str(ROOT / "entrypoint.sh"), "gateway"],
         env=environment, capture_output=True, text=True,
+    )
+    return result, pikpak_root, home, recorded, calls
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the container entrypoint is a POSIX shell script")
+@pytest.mark.skipif(
+    getattr(os, "geteuid", lambda: 0)() == 0,
+    reason="a root start takes the privilege-drop path instead of the seeding path",
+)
+def test_entrypoint_points_home_at_pikpak_storage(tmp_path):
+    """With PikPak credentials set, state is pulled before startup, HOME moves
+    onto the persistent directory, and the conventional data path is linked."""
+    result, pikpak_root, home, recorded, calls = _pikpak_entrypoint_run(
+        tmp_path, env={"KOYEB": "true"},
     )
     assert result.returncode == 0, result.stdout + result.stderr
 
@@ -222,6 +239,40 @@ def test_entrypoint_points_home_at_pikpak_storage(tmp_path):
     # The final upload after the gateway exits must use the same filter, or
     # logs would creep back into the persistent store on every shutdown.
     assert f"copy {pikpak_root}/.nanobot pikpak:nanobot/.nanobot --exclude /logs/**" in calls_text
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the container entrypoint is a POSIX shell script")
+@pytest.mark.skipif(
+    getattr(os, "geteuid", lambda: 0)() == 0,
+    reason="a root start takes the privilege-drop path instead of the seeding path",
+)
+def test_hosted_entrypoint_starts_gateway_when_pikpak_pull_fails(tmp_path):
+    """A slow or broken remote store must not keep the health-check port closed
+    on hosted web services: the platform template is reseeded and the gateway
+    starts in the foreground instead of aborting."""
+    result, pikpak_root, _, recorded, _ = _pikpak_entrypoint_run(
+        tmp_path, env={"KOYEB": "true"}, pull_fails=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    config = pikpak_root / ".nanobot" / "config.json"
+    assert config.read_text(encoding="utf-8") == (ROOT / "koyeb-config.json").read_text(encoding="utf-8")
+    assert recorded.read_text(encoding="utf-8").splitlines() == [
+        "gateway", "--config", str(config), str(pikpak_root),
+    ]
+    assert "timed out" in result.stderr
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the container entrypoint is a POSIX shell script")
+@pytest.mark.skipif(
+    getattr(os, "geteuid", lambda: 0)() == 0,
+    reason="a root start takes the privilege-drop path instead of the seeding path",
+)
+def test_local_bootstrap_stays_fail_closed_when_pikpak_pull_fails(tmp_path):
+    """Outside hosted platforms the startup pull stays a hard prerequisite."""
+    result, _, _, recorded, _ = _pikpak_entrypoint_run(tmp_path, pull_fails=True)
+    assert result.returncode != 0
+    assert not recorded.exists()
+    assert "refusing to start" in result.stderr
 
 
 def test_first_boot_generates_valid_container_config(tmp_path):
