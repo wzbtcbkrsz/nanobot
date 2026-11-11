@@ -11,9 +11,24 @@ RUN mkdir -p /app/nanobot/web && npm run build
 
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates curl git bubblewrap openssh-client libmagic1 && \
-    rm -rf /var/lib/apt/lists/*
+# rclone backs the PikPak persistent store for hosts without a durable volume.
+# Pin the release so builds stay reproducible; derive the architecture from the
+# build image so cross-platform builds pick the right binary.
+ARG RCLONE_VERSION=v1.76.0
+RUN set -eu; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates curl git bubblewrap openssh-client libmagic1 unzip; \
+    case "$(dpkg --print-architecture)" in \
+        arm64) rclone_arch=arm64 ;; \
+        armhf) rclone_arch=arm-v7 ;; \
+        *) rclone_arch=amd64 ;; \
+    esac; \
+    curl -fsSL "https://downloads.rclone.org/${RCLONE_VERSION}/rclone-${RCLONE_VERSION}-linux-${rclone_arch}.zip" -o /tmp/rclone.zip; \
+    unzip -j /tmp/rclone.zip '*/rclone' -d /usr/local/bin; \
+    chmod 0755 /usr/local/bin/rclone; \
+    rm -f /tmp/rclone.zip; \
+    rm -rf /var/lib/apt/lists/*; \
+    rclone version
 
 WORKDIR /app
 
@@ -56,11 +71,13 @@ COPY render-config.json ./
 COPY koyeb-config.json ./
 
 RUN useradd -m -u 1000 -s /bin/bash nanobot && \
-    mkdir -p /home/nanobot/.nanobot && \
-    chown -R nanobot:nanobot /home/nanobot /app/.venv
+    mkdir -p /home/nanobot/.nanobot /data/nanobot-home && \
+    chown -R nanobot:nanobot /home/nanobot /data/nanobot-home /app/.venv
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN sed -i 's/\r$//' /usr/local/bin/entrypoint.sh && chmod +x /usr/local/bin/entrypoint.sh
+COPY pikpak-storage.sh /usr/local/bin/pikpak-storage.sh
+RUN sed -i 's/\r$//' /usr/local/bin/entrypoint.sh /usr/local/bin/pikpak-storage.sh && \
+    chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/pikpak-storage.sh
 
 # Start as root so the entrypoint can chown the data dir (on Render, the
 # freshly-mounted root-owned persistent disk) before dropping to the non-root
@@ -69,6 +86,12 @@ RUN sed -i 's/\r$//' /usr/local/bin/entrypoint.sh && chmod +x /usr/local/bin/ent
 # entrypoint.sh).
 USER root
 ENV HOME=/home/nanobot
+# PikPak persistence is opt-in: entrypoint.sh activates it only when both
+# PIKPAK_USER and PIKPAK_PASSWORD are injected at runtime. Credentials are
+# never baked into the image (.env is git-ignored and .dockerignore'd).
+ENV PIKPAK_LOCAL_ROOT=/data/nanobot-home \
+    PIKPAK_REMOTE_PATH=nanobot/.nanobot \
+    PIKPAK_SYNC_INTERVAL=30
 # Ensure crash output reaches Render logs (app output is otherwise swallowed on
 # non-graceful exit).
 ENV PYTHONUNBUFFERED=1 PYTHONFAULTHANDLER=1

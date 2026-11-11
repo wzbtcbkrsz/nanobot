@@ -1,0 +1,125 @@
+#!/bin/sh
+# PikPak-backed persistent storage for the nanobot container.
+#
+# Sourced by entrypoint.sh. This file only defines functions: the entrypoint is
+# re-exec'd once via setpriv to drop privileges, so sourcing it twice must be
+# free of side effects. Free PaaS tiers (Koyeb included) do not expose
+# /dev/fuse, so persistence uses rclone copy instead of an rclone mount.
+
+pikpak_log() {
+    printf '[pikpak] %s\n' "$*"
+}
+
+pikpak_warn() {
+    printf '[pikpak] warning: %s\n' "$*" >&2
+}
+
+# Upload local state. Use copy, never sync: a transient local problem must not
+# delete the persistent copy. Local deletions can reappear after a fresh pull;
+# that tradeoff is deliberate for a single-instance free deployment.
+pikpak_sync_up() {
+    rclone copy "$PIKPAK_DATA_DIR" "$PIKPAK_REMOTE_SPEC" \
+        --retries 3 --timeout 60s --transfers 4 --checkers 8 \
+        --log-level ERROR
+}
+
+# Keep the image's conventional data path usable too (bind mounts, Render disk,
+# docs). Only replace an empty directory; never touch a populated volume.
+pikpak_link_legacy_home() {
+    legacy="${PIKPAK_ORIGINAL_HOME:-/home/nanobot}/.nanobot"
+    if [ -L "$legacy" ]; then
+        return 0
+    fi
+    if [ -d "$legacy" ]; then
+        if [ -n "$(ls -A "$legacy" 2>/dev/null)" ]; then
+            pikpak_warn "$legacy holds data (bind mount or volume); leaving it untouched"
+            return 0
+        fi
+        rmdir "$legacy" 2>/dev/null || return 0
+    fi
+    ln -s "$PIKPAK_DATA_DIR" "$legacy" 2>/dev/null || \
+        pikpak_warn "could not link $legacy to $PIKPAK_DATA_DIR"
+}
+
+pikpak_bootstrap() {
+    PIKPAK_LOCAL_ROOT="${PIKPAK_LOCAL_ROOT:-/data/nanobot-home}"
+    PIKPAK_REMOTE_PATH="${PIKPAK_REMOTE_PATH:-nanobot/.nanobot}"
+    PIKPAK_SYNC_INTERVAL="${PIKPAK_SYNC_INTERVAL:-30}"
+    PIKPAK_CONF_DIR="${PIKPAK_CONF_DIR:-/tmp/nanobot-pikpak}"
+    PIKPAK_SYNC_LOOP="${PIKPAK_SYNC_LOOP:-1}"
+
+    if ! command -v rclone >/dev/null 2>&1; then
+        pikpak_warn "rclone is not installed — refusing to start without persistent storage"
+        return 1
+    fi
+
+    PIKPAK_DATA_DIR="$PIKPAK_LOCAL_ROOT/.nanobot"
+    PIKPAK_REMOTE_SPEC="pikpak:$PIKPAK_REMOTE_PATH"
+    PIKPAK_CONF="$PIKPAK_CONF_DIR/rclone.conf"
+    PIKPAK_CACHE_DIR="$PIKPAK_CONF_DIR/cache"
+    PIKPAK_SYNC_LOG="$PIKPAK_CONF_DIR/sync.log"
+    PIKPAK_ORIGINAL_HOME="$HOME"
+
+    mkdir -p "$PIKPAK_CONF_DIR" "$PIKPAK_CACHE_DIR" "$PIKPAK_LOCAL_ROOT" || return 1
+
+    # The pikpak backend requires an obscured password. Keep the plaintext only
+    # in PIKPAK_PASSWORD, which the platform injects as an environment variable.
+    obscured_pass=$(rclone obscure "$PIKPAK_PASSWORD") || return 1
+
+    # Define the remote entirely through environment variables; the writable
+    # config file only caches the PikPak login token for this container's life.
+    export RCLONE_CONFIG="$PIKPAK_CONF"
+    export RCLONE_CACHE_DIR="$PIKPAK_CACHE_DIR"
+    export RCLONE_CONFIG_PIKPAK_TYPE=pikpak
+    export RCLONE_CONFIG_PIKPAK_USER="$PIKPAK_USER"
+    export RCLONE_CONFIG_PIKPAK_PASS="$obscured_pass"
+    rclone config touch >/dev/null 2>&1 || true
+
+    # rclone copy fails when the remote path does not exist, which is the normal
+    # state on the very first deployment. mkdir is idempotent; ignore its error.
+    rclone mkdir "$PIKPAK_REMOTE_SPEC" >/dev/null 2>&1 || true
+
+    pikpak_log "pulling $PIKPAK_REMOTE_SPEC into $PIKPAK_DATA_DIR"
+    if ! rclone copy "$PIKPAK_REMOTE_SPEC" "$PIKPAK_DATA_DIR" \
+            --retries 3 --timeout 60s --transfers 4 --checkers 8 \
+            --log-level ERROR; then
+        pikpak_warn "initial pull failed — refusing to start with an incomplete data dir"
+        return 1
+    fi
+
+    chown -R nanobot:nanobot "$PIKPAK_LOCAL_ROOT" "$PIKPAK_CONF_DIR" 2>/dev/null || true
+
+    # All nanobot state is derived from $HOME/.nanobot (nanobot/config/paths.py),
+    # so pointing HOME here puts config.json, sessions, memory, cron, media,
+    # logs and WebUI history on the PikPak-backed directory.
+    export HOME="$PIKPAK_LOCAL_ROOT"
+    export PIKPAK_DATA_DIR PIKPAK_REMOTE_SPEC PIKPAK_ORIGINAL_HOME PIKPAK_LOCAL_ROOT
+    export PIKPAK_CONF_DIR PIKPAK_CACHE_DIR PIKPAK_SYNC_LOG PIKPAK_SYNC_INTERVAL
+    export PIKPAK_SYNC_LOOP
+    pikpak_link_legacy_home
+    return 0
+}
+
+# Started only after every other startup check has passed, so a failed
+# privilege drop or config seed cannot leave a background uploader behind.
+pikpak_start_sync_loop() {
+    [ "$PIKPAK_SYNC_LOOP" = "1" ] || return 0
+    (
+        while :; do
+            sleep "$PIKPAK_SYNC_INTERVAL"
+            pikpak_sync_up || pikpak_warn "periodic sync failed"
+        done
+    ) >>"$PIKPAK_SYNC_LOG" 2>&1 &
+    PIKPAK_SYNC_PID=$!
+    export PIKPAK_SYNC_PID
+    pikpak_log "periodic upload every ${PIKPAK_SYNC_INTERVAL}s (pid $PIKPAK_SYNC_PID)"
+}
+
+pikpak_final_sync() {
+    if [ -n "$PIKPAK_SYNC_PID" ]; then
+        kill "$PIKPAK_SYNC_PID" 2>/dev/null || true
+        wait "$PIKPAK_SYNC_PID" 2>/dev/null || true
+    fi
+    pikpak_log "final upload before exit"
+    pikpak_sync_up || pikpak_warn "final upload failed"
+}

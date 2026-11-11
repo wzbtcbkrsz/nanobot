@@ -70,7 +70,9 @@ def test_koyeb_descriptor_serves_the_webui_on_one_public_port():
     port = definition["ports"][0]["port"]
     assert definition["routes"] == [{"port": port, "path": "/"}]
     assert definition["health_checks"][0]["tcp"] == {"port": port}
-    assert {entry["key"] for entry in definition["env"]} == {"ANTHROPIC_API_KEY", "NANOBOT_WEB_TOKEN"}
+    assert {entry["key"] for entry in definition["env"]} == {
+        "ANTHROPIC_API_KEY", "NANOBOT_WEB_TOKEN", "PIKPAK_USER", "PIKPAK_PASSWORD",
+    }
 
 
 def test_koyeb_config_template_binds_the_public_websocket_endpoint(monkeypatch):
@@ -149,6 +151,66 @@ def test_entrypoint_keeps_an_explicit_platform_command(tmp_path):
     assert recorded.read_text(encoding="utf-8").splitlines() == [
         "gateway", "--verbose", "--config", str(config),
     ]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the container entrypoint is a POSIX shell script")
+@pytest.mark.skipif(
+    getattr(os, "geteuid", lambda: 0)() == 0,
+    reason="a root start takes the privilege-drop path instead of the seeding path",
+)
+def test_entrypoint_points_home_at_pikpak_storage(tmp_path):
+    """With PikPak credentials set, state is pulled before startup, HOME moves
+    onto the persistent directory, and the conventional data path is linked."""
+    home = tmp_path / "home"
+    (home / ".nanobot").mkdir(parents=True)
+    templates = tmp_path / "templates"
+    templates.mkdir()
+    shutil.copy(ROOT / "koyeb-config.json", templates / "koyeb-config.json")
+
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    recorded = tmp_path / "argv.txt"
+    nanobot_stub = bindir / "nanobot"
+    nanobot_stub.write_text(
+        f'#!/bin/sh\nprintf "%s\\n" "$@" > "{recorded}"\nprintf "%s\\n" "$HOME" >> "{recorded}"\n',
+        encoding="utf-8",
+    )
+    nanobot_stub.chmod(0o755)
+    calls = tmp_path / "rclone-calls.txt"
+    rclone_stub = bindir / "rclone"
+    rclone_stub.write_text(
+        f'#!/bin/sh\nprintf "%s\\n" "$*" >> "{calls}"\n'
+        'case "$1" in obscure) echo OBSCURED ;; esac\nexit 0\n',
+        encoding="utf-8",
+    )
+    rclone_stub.chmod(0o755)
+
+    pikpak_root = tmp_path / "pikpak-home"
+    environment = {
+        "HOME": str(home),
+        "PATH": f"{bindir}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
+        "NANOBOT_CONFIG_TEMPLATE_DIR": str(templates),
+        "NANOBOT_PIKPAK_SCRIPT": str(ROOT / "pikpak-storage.sh"),
+        "PIKPAK_USER": "user@example.com",
+        "PIKPAK_PASSWORD": "secret",
+        "PIKPAK_LOCAL_ROOT": str(pikpak_root),
+        "PIKPAK_CONF_DIR": str(tmp_path / "pikpak-conf"),
+        "PIKPAK_SYNC_LOOP": "0",
+        "KOYEB": "true",
+    }
+    result = subprocess.run(
+        ["sh", str(ROOT / "entrypoint.sh"), "gateway"],
+        env=environment, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    config = pikpak_root / ".nanobot" / "config.json"
+    assert config.read_text(encoding="utf-8") == (ROOT / "koyeb-config.json").read_text(encoding="utf-8")
+    assert recorded.read_text(encoding="utf-8").splitlines() == [
+        "gateway", "--config", str(config), str(pikpak_root),
+    ]
+    assert (home / ".nanobot").is_symlink()
+    assert f"copy pikpak:nanobot/.nanobot {pikpak_root}/.nanobot" in calls.read_text(encoding="utf-8")
 
 
 def test_first_boot_generates_valid_container_config(tmp_path):

@@ -8,13 +8,17 @@
 # routes the public domain to the WebUI/WebSocket port, so the browser talks
 # https:// and wss:// to the same origin.
 #
-# Create the two secrets referenced below before deploying:
+# Create the secrets referenced below before deploying:
 #
 #   koyeb secrets create anthropic-api-key --value "$ANTHROPIC_API_KEY"
 #   koyeb secrets create nanobot-web-token --value "$(openssl rand -hex 32)"
+#   koyeb secrets create pikpak-user --value "$PIKPAK_USER"
+#   koyeb secrets create pikpak-password --value "$PIKPAK_PASSWORD"
 #
-# Sessions, memory, and WebUI history live in /home/nanobot/.nanobot. Attach a
-# volume there to keep them across deployments; see docs/deployment.md.
+# Sessions, memory, and WebUI history live in /home/nanobot/.nanobot. Koyeb
+# volumes require a paid instance, so on the free tier the PIKPAK_USER and
+# PIKPAK_PASSWORD secrets make the entrypoint mirror that directory to PikPak
+# with rclone instead. See docs/deployment.md#persistent-data-on-the-free-tier.
 app:
   name: nanobot
 
@@ -67,3 +71,8 @@ services:
         # this is the password the browser asks for.
         - key: NANOBOT_WEB_TOKEN
           value: "{{secret.nanobot-web-token}}"
+        # PikPak credentials for the free-tier persistent store (no volume).
+        - key: PIKPAK_USER
+          value: "{{secret.pikpak-user}}"
+        - key: PIKPAK_PASSWORD
+          value: "{{secret.pikpak-password}}"

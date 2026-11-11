@@ -1,4 +1,25 @@
 #!/bin/sh
+
+# Optional PikPak-backed persistent storage for hosts without a durable volume.
+# Active only when both credentials are supplied, so existing Render/Koyeb/
+# Compose deployments keep their current disk/volume behaviour unchanged.
+pikpak_enabled=0
+if [ -n "$PIKPAK_USER" ] && [ -n "$PIKPAK_PASSWORD" ]; then
+    pikpak_script="${NANOBOT_PIKPAK_SCRIPT:-/usr/local/bin/pikpak-storage.sh}"
+    if [ ! -f "$pikpak_script" ]; then
+        echo "[entrypoint] error: PikPak credentials are set but $pikpak_script is missing" >&2
+        exit 1
+    fi
+    . "$pikpak_script"
+    # The privilege drop below re-execs this script. Bootstrap only the first
+    # pass, but re-source the functions so pikpak_final_sync stays available.
+    if [ -z "$NANOBOT_PIKPAK_BOOTSTRAPPED" ]; then
+        export NANOBOT_PIKPAK_BOOTSTRAPPED=1
+        pikpak_bootstrap || exit 1
+    fi
+    pikpak_enabled=1
+fi
+
 dir="$HOME/.nanobot"
 
 # Drop privileges whenever the container starts as root. Render mounts the
@@ -75,6 +96,29 @@ elif [ "$NANOBOT_DOCKER_BOOTSTRAP" = "1" ] && { [ "$1" = "gateway" ] || [ "$1" =
         python -m nanobot.cli.docker_bootstrap "$config" || exit 1
         set -- "$@" --config "$config"
     fi
+fi
+
+if [ "$pikpak_enabled" = "1" ]; then
+    # Keep this shell as PID 1 so a final upload runs after the gateway exits;
+    # nanobot itself becomes a child and receives forwarded termination signals.
+    pikpak_start_sync_loop
+    nanobot "$@" &
+    app_pid=$!
+    trap 'kill -TERM "$app_pid" 2>/dev/null' TERM INT
+    while :; do
+        if wait "$app_pid"; then
+            app_status=0
+            break
+        fi
+        app_status=$?
+        # A trapped signal interrupts wait while the child is still alive.
+        if ! kill -0 "$app_pid" 2>/dev/null; then
+            break
+        fi
+    done
+    trap - TERM INT
+    pikpak_final_sync
+    exit "$app_status"
 fi
 
 exec nanobot "$@"

@@ -23,7 +23,7 @@ Restart the deployed process after editing `config.json`. Long-running processes
 | Runtime | Use it for | State location | Useful first command |
 |---|---|---|---|
 | Render | One-click hosted gateway and WebUI | Persistent disk at `/home/nanobot/.nanobot` | [Deploy to Render](#render) |
-| Koyeb | Hosted gateway and WebUI behind Koyeb's edge | Volume at `/home/nanobot/.nanobot` | [Deploy to Koyeb](#koyeb) |
+| Koyeb | Hosted gateway and WebUI behind Koyeb's edge | Volume, or PikPak-backed `$HOME/.nanobot` on the free tier | [Deploy to Koyeb](#koyeb) |
 | Docker Compose | Repeatable container runs on Linux servers or workstations | Bind-mount `~/.nanobot` to `/home/nanobot/.nanobot` | `docker compose run --rm nanobot-cli agent -m "Hello!"` |
 | Docker CLI | Manual container testing or small one-off hosts | Bind-mount `~/.nanobot` to `/home/nanobot/.nanobot` | `docker run -v ~/.nanobot:/home/nanobot/.nanobot --rm nanobot status` |
 | systemd user service | Linux user-level gateway that restarts automatically | Host user's `~/.nanobot` unless you pass explicit paths | `systemctl --user status nanobot-gateway` |
@@ -62,20 +62,20 @@ If deployment fails, open the service **Logs** page first. A missing model key f
 Run nanobot online on Koyeb as a web service. The deployment descriptor builds the image from this repository, routes the public domain to the WebUI, and keeps the gateway in the foreground.
 
 > [!IMPORTANT]
-> Create the two secrets the descriptor references before deploying: `ANTHROPIC_API_KEY` for the model API and `NANOBOT_WEB_TOKEN` as the password for the public WebUI. Generate the web token with `openssl rand -hex 32` and keep it private.
+> Create the four secrets the descriptor references before deploying: `ANTHROPIC_API_KEY` for the model API, `NANOBOT_WEB_TOKEN` as the password for the public WebUI, and `PIKPAK_USER` / `PIKPAK_PASSWORD` for the free-tier persistent store. Generate the web token with `openssl rand -hex 32` and keep it private.
 
 [Review the deployment descriptor](../koyeb-compose.yaml)
 
 ### First Deployment
 
 1. Install the [Koyeb CLI](https://www.koyeb.com/docs/build-and-deploy/cli/installation) and authenticate with `koyeb login`.
-2. Create the secrets: `koyeb secrets create anthropic-api-key --value "$ANTHROPIC_API_KEY"` and `koyeb secrets create nanobot-web-token --value "$(openssl rand -hex 32)"`.
+2. Create the secrets: `koyeb secrets create anthropic-api-key --value "$ANTHROPIC_API_KEY"`, `koyeb secrets create nanobot-web-token --value "$(openssl rand -hex 32)"`, plus the two PikPak secrets shown in [Persistent Data on the Free Tier](#persistent-data-on-the-free-tier).
 3. Run `koyeb compose ./koyeb-compose.yaml` from a clone of this repository. Koyeb builds the image from the GitHub source named in the descriptor, so the first build compiles the WebUI and can take several minutes.
 4. Open the generated `https://<app>-<organization>-<hash>.koyeb.app` URL. The **Authentication required** page means the gateway is running: enter the `NANOBOT_WEB_TOKEN` value to open the WebUI.
 
 The model API key is used by nanobot to call Anthropic. The web token only protects access to this deployment; do not share it in issues, screenshots, or chat.
 
-To deploy a prebuilt image instead of building from the repository, replace the `git` block of the descriptor with `docker: {image: <registry>/<image>:<tag>}` and keep the entrypoint, command, ports, and routes unchanged. The same settings apply when you create the service in the control panel: a **Web** service, port `8765` with the HTTP protocol, the route `/`, a TCP health check on `8765`, and the two environment variables below. Leave the Docker command empty — the entrypoint replaces the image's interactive `webui` default with the foreground `gateway` — or set it to `gateway` explicitly.
+To deploy a prebuilt image instead of building from the repository, replace the `git` block of the descriptor with `docker: {image: <registry>/<image>:<tag>}` and keep the entrypoint, command, ports, and routes unchanged. The same settings apply when you create the service in the control panel: a **Web** service, port `8765` with the HTTP protocol, the route `/`, a TCP health check on `8765`, and the environment variables from the descriptor. Leave the Docker command empty — the entrypoint replaces the image's interactive `webui` default with the foreground `gateway` — or set it to `gateway` explicitly.
 
 ### Ports, TLS, and the WebSocket URL
 
@@ -95,6 +95,22 @@ koyeb services update nanobot/nanobot --volumes nanobot-data:/home/nanobot/.nano
 ```
 
 The volume must sit in the same region as the service, so keep the `fra` region of the descriptor when you attach one. The deployment initializes `config.json` only when it does not already exist, so settings changed later in the WebUI are not replaced on every boot.
+
+### Persistent Data on the Free Tier
+
+Koyeb volumes require a paid instance, and local storage is ephemeral on the free tier, so `config.json`, sessions, memory, and WebUI history are otherwise lost whenever the instance is replaced. Set `PIKPAK_USER` and `PIKPAK_PASSWORD` as secrets to persist them in a PikPak drive instead; the image ships rclone for this. No `/dev/fuse` or privileged container is needed, because Koyeb free Web Services cannot expose FUSE devices — the entrypoint uses rclone `copy` rather than an rclone mount.
+
+Before starting the gateway, the entrypoint pulls `pikpak:nanobot/.nanobot` into `/data/nanobot-home/.nanobot`, points `HOME` at `/data/nanobot-home`, and links the conventional `/home/nanobot/.nanobot` path to it (an existing populated volume is never replaced). All nanobot state derives from `$HOME/.nanobot`, so config, sessions, memory, cron, media, logs, and WebUI history are covered. A background loop uploads local changes every `PIKPAK_SYNC_INTERVAL` seconds (default 30), and the entrypoint performs one final upload after the gateway exits. If the initial pull fails, startup aborts rather than running with an empty data directory.
+
+```bash
+koyeb secrets create pikpak-user --value "$PIKPAK_USER"
+koyeb secrets create pikpak-password --value "$PIKPAK_PASSWORD"
+koyeb services redeploy nanobot/nanobot
+```
+
+The two credentials are the only required settings. Optional overrides are `PIKPAK_LOCAL_ROOT` (default `/data/nanobot-home`), `PIKPAK_REMOTE_PATH` (default `nanobot/.nanobot`), `PIKPAK_SYNC_INTERVAL` (default `30`, in seconds), and `PIKPAK_SYNC_LOOP=0` to disable periodic uploads and keep only the startup pull and shutdown upload. Leave both credentials unset to go back to the volume/disk behaviour described above; the image keeps its existing startup path untouched in that case. For local Compose runs, copy `.env.example` to `.env` and fill in the two credentials — `.env` is git-ignored and excluded from the image build.
+
+This is eventual consistency, not a mounted filesystem: up to `PIKPAK_SYNC_INTERVAL` seconds of the most recent writes can be lost if the instance is killed without a graceful shutdown, and a file deleted locally reappears after the next pull because uploads use `copy`, never `sync` (so a transient local failure cannot wipe the remote copy). SQLite state is copied while the gateway is running, so treat the store as a single-instance backup rather than a shared database; run one replica only.
 
 ### Health Checks
 
