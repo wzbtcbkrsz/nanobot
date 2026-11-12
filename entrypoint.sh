@@ -120,14 +120,21 @@ if [ "$pikpak_enabled" = "1" ]; then
         # the gateway once: only that second start is the real, fully loaded
         # instance. A shutdown signal during the restore skips the restart.
         pikpak_start_deferred_pull
-        wait "$PIKPAK_PULL_PID" 2>/dev/null || true
+        if wait "$PIKPAK_PULL_PID" 2>/dev/null; then
+            pull_ok=1
+        else
+            pull_ok=0
+        fi
         # The restore brings back config.json too. Reapply the platform-owned
         # fields before the restart, so an old loopback bind, port, or token
         # cannot take the gateway off the public endpoint. User settings such
         # as the model and provider are preserved.
         merge_script="${NANOBOT_MERGE_SCRIPT:-$template_dir/merge_platform_config.py}"
+        merge_ok=0
         if [ -f "$config" ]; then
-            if ! python "$merge_script" "$template_dir/$template" "$config"; then
+            if python "$merge_script" "$template_dir/$template" "$config"; then
+                merge_ok=1
+            else
                 echo "[entrypoint] warning: could not merge restored config — falling back to the platform template" >&2
                 cp "$template_dir/$template" "$config" || exit 1
             fi
@@ -138,7 +145,17 @@ if [ "$pikpak_enabled" = "1" ]; then
             wait "$app_pid" 2>/dev/null || true
             nanobot "$@" &
             app_pid=$!
+            # Gate uploads on a complete startup. Until the pull, merge and
+            # restart all succeed, no periodic or shutdown upload may run: a
+            # template-only half-start must never overwrite persisted state.
+            if [ "$pull_ok" = "1" ] && [ "$merge_ok" = "1" ]; then
+                pikpak_mark_ready
+            fi
         fi
+    else
+        # Local/Compose pulls synchronously during bootstrap, so state is
+        # already restored before the gateway starts.
+        pikpak_mark_ready
     fi
 
     while :; do

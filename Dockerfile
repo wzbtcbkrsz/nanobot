@@ -87,11 +87,11 @@ ENV HOME=/home/nanobot
 # PIKPAK_USER and PIKPAK_PASSWORD are injected at runtime. Credentials are
 # never baked into the image (.env is git-ignored and .dockerignore'd).
 # A short interval on a small instance makes rclone walks pile up (each upload
-# can stall for minutes when the remote is slow), so default to 5 minutes.
+# can stall for minutes when the remote is slow), so default to 45 minutes.
 # Hosted platforms can still override this with an environment variable.
 ENV PIKPAK_LOCAL_ROOT=/data/nanobot-home \
     PIKPAK_REMOTE_PATH=nanobot/.nanobot \
-    PIKPAK_SYNC_INTERVAL=300
+    PIKPAK_SYNC_INTERVAL=2700
 # Ensure crash output reaches Render logs (app output is otherwise swallowed on
 # non-graceful exit).
 ENV PYTHONUNBUFFERED=1 PYTHONFAULTHANDLER=1

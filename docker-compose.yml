@@ -14,7 +14,7 @@ x-common-config: &common-config
     PIKPAK_PASSWORD: "${PIKPAK_PASSWORD:-}"
     PIKPAK_LOCAL_ROOT: "${PIKPAK_LOCAL_ROOT:-/data/nanobot-home}"
     PIKPAK_REMOTE_PATH: "${PIKPAK_REMOTE_PATH:-nanobot/.nanobot}"
-    PIKPAK_SYNC_INTERVAL: "${PIKPAK_SYNC_INTERVAL:-300}"
+    PIKPAK_SYNC_INTERVAL: "${PIKPAK_SYNC_INTERVAL:-2700}"
   # With PikPak enabled HOME moves to PIKPAK_LOCAL_ROOT and this bind mount is
   # left untouched; the entrypoint never replaces a populated volume. Without
   # PikPak it is the usual durable data directory.

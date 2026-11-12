@@ -21,7 +21,15 @@ pikpak_warn() {
 # grow without bound (LLM retries, WebUI traffic), so persisting them only makes
 # the next startup pull slower. The initial pull uses the same filter so logs
 # left on the remote by an older image never come back.
+# Nothing is uploaded until entrypoint.sh opens the startup gate. Before the
+# pull -> merge -> restart sequence completes, the local state (including the
+# platform config template) belongs to a half-started instance, and uploading
+# it would overwrite the user's persisted settings on the remote.
 pikpak_sync_up() {
+    if [ ! -f "$PIKPAK_READY_FILE" ]; then
+        pikpak_log "upload skipped: startup not complete"
+        return 0
+    fi
     rclone copy "$PIKPAK_DATA_DIR" "$PIKPAK_REMOTE_SPEC" \
         --exclude "/logs/**" \
         --retries 3 --timeout 60s --transfers 4 --checkers 8 \
@@ -77,7 +85,7 @@ pikpak_pull_state() {
 pikpak_bootstrap() {
     PIKPAK_LOCAL_ROOT="${PIKPAK_LOCAL_ROOT:-/data/nanobot-home}"
     PIKPAK_REMOTE_PATH="${PIKPAK_REMOTE_PATH:-nanobot/.nanobot}"
-    PIKPAK_SYNC_INTERVAL="${PIKPAK_SYNC_INTERVAL:-300}"
+    PIKPAK_SYNC_INTERVAL="${PIKPAK_SYNC_INTERVAL:-2700}"
     PIKPAK_CONF_DIR="${PIKPAK_CONF_DIR:-/tmp/nanobot-pikpak}"
     PIKPAK_SYNC_LOOP="${PIKPAK_SYNC_LOOP:-1}"
     # The deferred pull runs after the gateway is already serving, so it may
@@ -98,10 +106,14 @@ pikpak_bootstrap() {
     PIKPAK_CACHE_DIR="$PIKPAK_CONF_DIR/cache"
     PIKPAK_SYNC_LOG="$PIKPAK_CONF_DIR/sync.log"
     PIKPAK_ORIGINAL_HOME="$HOME"
+    PIKPAK_READY_FILE="$PIKPAK_CONF_DIR/startup-complete"
 
     # rclone copy does not create the destination when the remote is empty
     # (first deployment), so make the data dir up front.
     mkdir -p "$PIKPAK_CONF_DIR" "$PIKPAK_CACHE_DIR" "$PIKPAK_LOCAL_ROOT" "$PIKPAK_DATA_DIR" || return 1
+    # Every container start begins with uploads disabled. The bootstrap is
+    # skipped on the setpriv re-exec, so this reset only runs once per start.
+    rm -f "$PIKPAK_READY_FILE" || return 1
 
     export RCLONE_CONFIG="$PIKPAK_CONF"
     export RCLONE_CACHE_DIR="$PIKPAK_CACHE_DIR"
@@ -115,6 +127,7 @@ pikpak_bootstrap() {
     export PIKPAK_DATA_DIR PIKPAK_REMOTE_SPEC PIKPAK_ORIGINAL_HOME PIKPAK_LOCAL_ROOT
     export PIKPAK_CONF PIKPAK_CONF_DIR PIKPAK_CACHE_DIR PIKPAK_SYNC_LOG
     export PIKPAK_SYNC_INTERVAL PIKPAK_SYNC_LOOP PIKPAK_PULL_TIMEOUT PIKPAK_DEFER_PULL
+    export PIKPAK_READY_FILE
     pikpak_link_legacy_home
 
     # Local/Compose deployments keep pulling state before startup and abort if
@@ -143,15 +156,23 @@ pikpak_start_deferred_pull() {
         sleep 2
         if ! pikpak_login; then
             pikpak_warn "deferred PikPak login failed — persistent state unavailable"
-            exit 0
+            exit 1
         fi
         if ! pikpak_pull_state; then
             pikpak_warn "deferred pull failed or timed out after ${PIKPAK_PULL_TIMEOUT}s — persistent state may be incomplete"
+            exit 1
         fi
+        exit 0
     ) >>"$PIKPAK_SYNC_LOG" 2>&1 &
     PIKPAK_PULL_PID=$!
     export PIKPAK_PULL_PID
     pikpak_log "deferred PikPak pull started (pid $PIKPAK_PULL_PID)"
+}
+
+# Open the upload gate. Called only after the deferred pull, the config merge,
+# and the gateway restart have all succeeded; see entrypoint.sh.
+pikpak_mark_ready() {
+    : > "$PIKPAK_READY_FILE" || pikpak_warn "could not open the upload gate"
 }
 
 # Started only after every other startup check has passed, so a failed

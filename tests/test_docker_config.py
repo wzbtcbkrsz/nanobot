@@ -79,7 +79,7 @@ def test_koyeb_descriptor_serves_the_webui_on_one_public_port():
         "ANTHROPIC_API_KEY", "NANOBOT_WEB_TOKEN", "PIKPAK_USER", "PIKPAK_PASSWORD",
         "PIKPAK_SYNC_INTERVAL",
     }
-    assert env["PIKPAK_SYNC_INTERVAL"] == "300"
+    assert env["PIKPAK_SYNC_INTERVAL"] == "2700"
 
 
 def test_koyeb_config_template_binds_the_public_websocket_endpoint(monkeypatch):
@@ -281,6 +281,8 @@ def test_hosted_entrypoint_restores_config_and_restarts(tmp_path):
     ]
     assert (home / ".nanobot").is_symlink()
     assert len((tmp_path / "starts.txt").read_text(encoding="utf-8").splitlines()) == 2
+    # The upload gate opens only after pull -> merge -> restart completed.
+    assert (tmp_path / "pikpak-conf" / "startup-complete").exists()
     calls_text = calls.read_text(encoding="utf-8")
     assert f"copy pikpak:nanobot/.nanobot {pikpak_root}/.nanobot --exclude /logs/**" in calls_text
     # The final upload after the gateway exits must still exclude logs.
@@ -294,7 +296,8 @@ def test_hosted_entrypoint_restores_config_and_restarts(tmp_path):
 )
 def test_hosted_entrypoint_starts_when_pikpak_is_down(tmp_path):
     """A broken remote store cannot block the first gateway start on hosted
-    services; startup performs no PikPak network operation at all."""
+    services; startup performs no PikPak network operation at all. Because the
+    pull failed, the upload gate stays closed and nothing is written back."""
     result, pikpak_root, _, recorded, calls = _pikpak_entrypoint_run(
         tmp_path, env={"KOYEB": "true"}, pull_fails=True,
     )
@@ -307,7 +310,9 @@ def test_hosted_entrypoint_starts_when_pikpak_is_down(tmp_path):
         "gateway", "--config", str(config), str(pikpak_root),
     ]
     assert "refusing to start" not in result.stderr
-    assert calls.read_text(encoding="utf-8")
+    # No restore completed => the gate never opens => no upload of any kind.
+    assert not (tmp_path / "pikpak-conf" / "startup-complete").exists()
+    assert f"copy {pikpak_root}/.nanobot pikpak:nanobot/.nanobot" not in calls.read_text(encoding="utf-8")
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="the container entrypoint is a POSIX shell script")
@@ -316,12 +321,15 @@ def test_hosted_entrypoint_starts_when_pikpak_is_down(tmp_path):
     reason="a root start takes the privilege-drop path instead of the seeding path",
 )
 def test_local_bootstrap_pulls_state_before_start(tmp_path):
-    """Local Compose keeps the original behaviour: state is pulled up front."""
-    result, _, _, _, calls = _pikpak_entrypoint_run(tmp_path)
+    """Local Compose keeps the original behaviour: state is pulled up front,
+    and the gate opens immediately since there is no deferred restore."""
+    result, pikpak_root, _, _, calls = _pikpak_entrypoint_run(tmp_path)
     assert result.returncode == 0, result.stdout + result.stderr
+    assert (tmp_path / "pikpak-conf" / "startup-complete").exists()
     calls_text = calls.read_text(encoding="utf-8")
     assert "copy pikpak:nanobot/.nanobot" in calls_text
     assert "--exclude /logs/**" in calls_text
+    assert f"copy {pikpak_root}/.nanobot pikpak:nanobot/.nanobot" in calls_text
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="the container entrypoint is a POSIX shell script")

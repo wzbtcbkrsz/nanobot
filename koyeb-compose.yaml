@@ -80,7 +80,8 @@ services:
         - key: PIKPAK_PASSWORD
           value: "{{secret.pikpak-password}}"
         # Each upload walks the whole data dir, and a larger remote makes the
-        # next startup pull slower. Pin the image's 300s default explicitly so
-        # the value survives a service created from the control panel too.
+        # next startup pull slower. Pin the image's 2700s (45 minute) default
+        # explicitly so the value survives a service created from the control
+        # panel too. Uploads stay disabled until startup has fully completed.
         - key: PIKPAK_SYNC_INTERVAL
-          value: "300"
+          value: "2700"
