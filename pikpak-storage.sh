@@ -49,10 +49,13 @@ pikpak_link_legacy_home() {
 pikpak_bootstrap() {
     PIKPAK_LOCAL_ROOT="${PIKPAK_LOCAL_ROOT:-/data/nanobot-home}"
     PIKPAK_REMOTE_PATH="${PIKPAK_REMOTE_PATH:-nanobot/.nanobot}"
-    PIKPAK_SYNC_INTERVAL="${PIKPAK_SYNC_INTERVAL:-30}"
+    PIKPAK_SYNC_INTERVAL="${PIKPAK_SYNC_INTERVAL:-300}"
     PIKPAK_CONF_DIR="${PIKPAK_CONF_DIR:-/tmp/nanobot-pikpak}"
     PIKPAK_SYNC_LOOP="${PIKPAK_SYNC_LOOP:-1}"
-    PIKPAK_PULL_TIMEOUT="${PIKPAK_PULL_TIMEOUT:-60}"
+    # Keep the startup pull well inside the platform's health-check grace
+    # period: a stalled remote must not consume the whole window before the
+    # gateway gets a chance to bind. Hosted services degrade after this.
+    PIKPAK_PULL_TIMEOUT="${PIKPAK_PULL_TIMEOUT:-20}"
     # Hosted web services set this to 1 (see entrypoint.sh): the gateway must
     # bind its health-check port even when the remote store is slow or down.
     PIKPAK_ALLOW_PARTIAL_START="${PIKPAK_ALLOW_PARTIAL_START:-0}"
