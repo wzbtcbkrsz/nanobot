@@ -6,7 +6,8 @@
 # platform on its own; KOYEB=true selects the same template explicitly. The
 # templates ship in the image code dir; NANOBOT_CONFIG_TEMPLATE_DIR points the
 # entrypoint at a different copy. Resolve the template before the PikPak
-# bootstrap: hosted web services also use it to relax that startup dependency.
+# bootstrap: hosted web services use it to keep every PikPak network operation
+# off the health-check startup path.
 template_dir="${NANOBOT_CONFIG_TEMPLATE_DIR:-/app}"
 template=""
 if [ "$RENDER" = "true" ]; then
@@ -15,7 +16,7 @@ elif [ "$KOYEB" = "true" ] || [ -n "$KOYEB_PUBLIC_DOMAIN" ]; then
     template=koyeb-config.json
 fi
 if [ -n "$template" ]; then
-    export PIKPAK_ALLOW_PARTIAL_START=1
+    export PIKPAK_DEFER_PULL=1
 fi
 
 # Optional PikPak-backed persistent storage for hosts without a durable volume.
@@ -71,9 +72,9 @@ fi
 if [ -n "$template" ]; then
     config="$dir/config.json"
     mkdir -p "$dir" || exit 1
-    # A degraded PikPak start can leave a partially pulled or stale config, so
-    # reseed the platform template to guarantee the public bind and port.
-    if [ ! -f "$config" ] || [ "$PIKPAK_START_DEGRADED" = "1" ]; then
+    # The deferred pull excludes config.json, so a stale remote config can
+    # never replace the platform template after the gateway has started.
+    if [ ! -f "$config" ]; then
         echo "[entrypoint] initializing $config from $template"
         cp "$template_dir/$template" "$config" || exit 1
     else
@@ -110,7 +111,25 @@ if [ "$pikpak_enabled" = "1" ]; then
     pikpak_start_sync_loop
     nanobot "$@" &
     app_pid=$!
-    trap 'kill -TERM "$app_pid" 2>/dev/null' TERM INT
+    shutting_down=0
+    trap 'shutting_down=1; kill -TERM "$app_pid" 2>/dev/null' TERM INT
+
+    if [ "$PIKPAK_DEFER_PULL" = "1" ]; then
+        # The gateway is already answering health checks on the platform port.
+        # Restore persisted state in the background, wait for it, then restart
+        # the gateway once: only that second start is the real, fully loaded
+        # instance. A shutdown signal during the restore skips the restart.
+        pikpak_start_deferred_pull
+        wait "$PIKPAK_PULL_PID" 2>/dev/null || true
+        if [ "$shutting_down" != "1" ] && kill -0 "$app_pid" 2>/dev/null; then
+            pikpak_log "state restore finished — restarting the gateway"
+            kill -TERM "$app_pid" 2>/dev/null
+            wait "$app_pid" 2>/dev/null || true
+            nanobot "$@" &
+            app_pid=$!
+        fi
+    fi
+
     while :; do
         if wait "$app_pid"; then
             app_status=0

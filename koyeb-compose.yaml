@@ -55,11 +55,10 @@ services:
           path: "/"
       # A TCP probe matches Koyeb's default and only needs the gateway socket to
       # be reachable; it does not depend on the bundled WebUI assets or a route.
-      # The PikPak-backed store pulls the whole .nanobot dir (and logs in to the
-      # remote) before the gateway binds, so a cold start can take minutes once
-      # sessions and media have accumulated. A short grace period then fails the
-      # probe, restarts into another slow pull, and loops until the instance is
-      # replaced. Leave enough time for that pull and tolerate a few failures.
+      # Hosted services bind the gateway before any PikPak network call, so the
+      # port opens immediately. The state restore then runs in the background
+      # and triggers one gateway restart, which briefly closes the socket. Keep
+      # the grace period and restart limit generous enough to absorb it.
       health_checks:
         - tcp:
             port: 8765
