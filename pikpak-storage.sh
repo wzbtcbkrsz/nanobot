@@ -62,14 +62,14 @@ pikpak_login() {
     return 0
 }
 
-# Pull persisted state. Callers may pass extra --exclude flags: hosted platforms
-# exclude config.json so a stale remote config cannot replace the platform
-# template the gateway is already running with. Logs are always excluded.
+# Pull persisted state, including config.json. The entrypoint re-applies the
+# platform template to that file before restarting the gateway, so user
+# settings survive without letting an old loopback bind take the port away.
+# Logs are excluded: they regenerate on every boot and grow without bound.
 pikpak_pull_state() {
     pikpak_log "pulling $PIKPAK_REMOTE_SPEC into $PIKPAK_DATA_DIR"
-    set -- --exclude "/logs/**" "$@"
     timeout "$PIKPAK_PULL_TIMEOUT" rclone copy "$PIKPAK_REMOTE_SPEC" "$PIKPAK_DATA_DIR" \
-        "$@" \
+        --exclude "/logs/**" \
         --retries 3 --timeout 60s --transfers 4 --checkers 8 \
         --log-level ERROR
 }
@@ -145,7 +145,7 @@ pikpak_start_deferred_pull() {
             pikpak_warn "deferred PikPak login failed — persistent state unavailable"
             exit 0
         fi
-        if ! pikpak_pull_state --exclude "/config.json"; then
+        if ! pikpak_pull_state; then
             pikpak_warn "deferred pull failed or timed out after ${PIKPAK_PULL_TIMEOUT}s — persistent state may be incomplete"
         fi
     ) >>"$PIKPAK_SYNC_LOG" 2>&1 &

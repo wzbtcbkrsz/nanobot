@@ -44,6 +44,9 @@ COPY README.md LICENSE THIRD_PARTY_NOTICES.md hatch_build.py ./
 COPY docs/ docs/
 COPY nanobot/ nanobot/
 COPY scripts/install_channel_dependencies.py scripts/
+# Merges a PikPak-restored config.json back onto the platform template after
+# the deferred state pull, before the gateway is restarted.
+COPY scripts/merge_platform_config.py ./
 COPY --from=webui-builder /app/nanobot/web/dist/ nanobot/web/dist/
 RUN NANOBOT_SKIP_WEBUI_BUILD=1 uv pip install --python "$VIRTUAL_ENV/bin/python" --no-cache --no-deps .
 

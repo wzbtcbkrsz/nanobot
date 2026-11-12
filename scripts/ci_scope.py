@@ -43,7 +43,9 @@ RULES = (
     (("koyeb-compose.yaml",), PYTHON, "Koyeb deployment descriptor startup contract"),
     (("Dockerfile", "Dockerfile.*", ".dockerignore", "docker-compose*.yml", "entrypoint.sh",
       "render-config.json", "koyeb-config.json", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md",
-      "tests/test_docker*", "scripts/docker_compose_smoke.py"), DOCKER, "Docker input or acceptance"),
+      "tests/test_docker*", "scripts/docker_compose_smoke.py",
+       "scripts/merge_platform_config.py", "tests/scripts/test_merge_platform_config.py"),
+      DOCKER, "Docker input or acceptance"),
     # Shared fixture consumers live in tests/webui and webui/src/tests; the
     # SQLite migration and release-trust fixtures have separate Python owners.
     (("tests/webui/fixtures/runtime-config-keys.json",), PYTHON | WEBUI,

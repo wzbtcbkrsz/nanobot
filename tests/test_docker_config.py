@@ -160,11 +160,15 @@ def test_entrypoint_keeps_an_explicit_platform_command(tmp_path):
     ]
 
 
-def _pikpak_entrypoint_run(tmp_path, *, env=None, pull_fails=False, app_stays_alive=False):
+def _pikpak_entrypoint_run(
+    tmp_path, *, env=None, pull_fails=False, app_stays_alive=False, restore_config=False,
+):
     """Run the entrypoint with PikPak credentials and stubbed rclone/nanobot.
 
     With app_stays_alive, the first gateway keeps running until terminated so
     the deferred-restore restart path can be observed; the second start exits.
+    With restore_config, the stubbed pull writes an old config.json as if it
+    had come back from the remote.
     """
     home = tmp_path / "home"
     (home / ".nanobot").mkdir(parents=True)
@@ -196,9 +200,27 @@ def _pikpak_entrypoint_run(tmp_path, *, env=None, pull_fails=False, app_stays_al
     calls = tmp_path / "rclone-calls.txt"
     rclone_stub = bindir / "rclone"
     copy_failure = 'case "$1" in copy) exit 1 ;; esac\n' if pull_fails else ""
+    restored = json.dumps({
+        "agents": {"defaults": {"model": "custom/user-model", "provider": "auto"}},
+        "providers": {"anthropic": {"apiKey": "sk-restored"}},
+        "gateway": {"host": "0.0.0.0", "port": 18790},
+        "channels": {"websocket": {
+            "enabled": False, "host": "127.0.0.1", "port": 9999,
+            "tokenIssueSecret": "stale-token",
+        }},
+        "tools": {"restrictToWorkspace": False},
+    })
+    restore_block = (
+        'case "$1" in copy)\n'
+        '    case "$2" in pikpak:*)\n'
+        f"        printf '%s\\n' '{restored}' > \"$3/config.json\"\n"
+        '    ;; esac\n'
+        ';; esac\n'
+    ) if restore_config else ""
     rclone_stub.write_text(
         f'#!/bin/sh\nprintf "%s\\n" "$*" >> "{calls}"\n'
         'case "$1" in obscure) echo OBSCURED ;; esac\n'
+        + restore_block
         + copy_failure
         + 'exit 0\n',
         encoding="utf-8",
@@ -216,6 +238,7 @@ def _pikpak_entrypoint_run(tmp_path, *, env=None, pull_fails=False, app_stays_al
         "PIKPAK_LOCAL_ROOT": str(pikpak_root),
         "PIKPAK_CONF_DIR": str(tmp_path / "pikpak-conf"),
         "PIKPAK_SYNC_LOOP": "0",
+        "NANOBOT_MERGE_SCRIPT": str(ROOT / "scripts" / "merge_platform_config.py"),
     }
     environment.update(env or {})
     result = subprocess.run(
@@ -230,26 +253,36 @@ def _pikpak_entrypoint_run(tmp_path, *, env=None, pull_fails=False, app_stays_al
     getattr(os, "geteuid", lambda: 0)() == 0,
     reason="a root start takes the privilege-drop path instead of the seeding path",
 )
-def test_hosted_entrypoint_defers_pull_and_restarts(tmp_path):
-    """Hosted services open the health-check port first, restore state in the
-    background, and only then restart the gateway as the fully loaded instance."""
+def test_hosted_entrypoint_restores_config_and_restarts(tmp_path):
+    """Hosted services restore config.json too, but reapply the platform-owned
+    fields before the post-restore restart so an old loopback bind is harmless."""
     result, pikpak_root, home, recorded, calls = _pikpak_entrypoint_run(
-        tmp_path, env={"KOYEB": "true"}, app_stays_alive=True,
+        tmp_path, env={"KOYEB": "true"}, app_stays_alive=True, restore_config=True,
     )
     assert result.returncode == 0, result.stdout + result.stderr
 
-    config = pikpak_root / ".nanobot" / "config.json"
-    assert config.read_text(encoding="utf-8") == (ROOT / "koyeb-config.json").read_text(encoding="utf-8")
+    config_path = pikpak_root / ".nanobot" / "config.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    template = json.loads((ROOT / "koyeb-config.json").read_text(encoding="utf-8"))
+    # User settings survive the restore.
+    assert config["agents"]["defaults"]["model"] == "custom/user-model"
+    assert config["providers"]["anthropic"]["apiKey"] == "sk-restored"
+    # Platform-owned fields are forced back to their template values.
+    websocket = config["channels"]["websocket"]
+    for key in ("enabled", "host", "port", "publicWsUrl", "tokenIssueSecret", "websocketRequiresToken"):
+        assert websocket[key] == template["channels"]["websocket"][key], key
+    assert config["gateway"]["host"] == template["gateway"]["host"]
+    assert config["tools"]["restrictToWorkspace"] is True
+    assert config["tools"]["webuiAllowRemotePackageInstall"] is False
+    assert not config_path.with_name(config_path.name + ".tmp").exists()
+
     assert recorded.read_text(encoding="utf-8").splitlines() == [
-        "gateway", "--config", str(config), str(pikpak_root),
+        "gateway", "--config", str(config_path), str(pikpak_root),
     ]
     assert (home / ".nanobot").is_symlink()
     assert len((tmp_path / "starts.txt").read_text(encoding="utf-8").splitlines()) == 2
-
     calls_text = calls.read_text(encoding="utf-8")
-    # The deferred pull must not bring back a stale config and replace the
-    # platform template the gateway is running with.
-    assert f"copy pikpak:nanobot/.nanobot {pikpak_root}/.nanobot --exclude /logs/** --exclude /config.json" in calls_text
+    assert f"copy pikpak:nanobot/.nanobot {pikpak_root}/.nanobot --exclude /logs/**" in calls_text
     # The final upload after the gateway exits must still exclude logs.
     assert f"copy {pikpak_root}/.nanobot pikpak:nanobot/.nanobot --exclude /logs/**" in calls_text
 
@@ -267,7 +300,9 @@ def test_hosted_entrypoint_starts_when_pikpak_is_down(tmp_path):
     )
     assert result.returncode == 0, result.stdout + result.stderr
     config = pikpak_root / ".nanobot" / "config.json"
-    assert config.read_text(encoding="utf-8") == (ROOT / "koyeb-config.json").read_text(encoding="utf-8")
+    assert json.loads(config.read_text(encoding="utf-8")) == json.loads(
+        (ROOT / "koyeb-config.json").read_text(encoding="utf-8")
+    )
     assert recorded.read_text(encoding="utf-8").splitlines() == [
         "gateway", "--config", str(config), str(pikpak_root),
     ]
@@ -286,8 +321,7 @@ def test_local_bootstrap_pulls_state_before_start(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     calls_text = calls.read_text(encoding="utf-8")
     assert "copy pikpak:nanobot/.nanobot" in calls_text
-    # Only the hosted, deferred pull protects the seeded platform config.
-    assert "--exclude /config.json" not in calls_text
+    assert "--exclude /logs/**" in calls_text
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="the container entrypoint is a POSIX shell script")

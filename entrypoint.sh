@@ -121,6 +121,17 @@ if [ "$pikpak_enabled" = "1" ]; then
         # instance. A shutdown signal during the restore skips the restart.
         pikpak_start_deferred_pull
         wait "$PIKPAK_PULL_PID" 2>/dev/null || true
+        # The restore brings back config.json too. Reapply the platform-owned
+        # fields before the restart, so an old loopback bind, port, or token
+        # cannot take the gateway off the public endpoint. User settings such
+        # as the model and provider are preserved.
+        merge_script="${NANOBOT_MERGE_SCRIPT:-$template_dir/merge_platform_config.py}"
+        if [ -f "$config" ]; then
+            if ! python "$merge_script" "$template_dir/$template" "$config"; then
+                echo "[entrypoint] warning: could not merge restored config — falling back to the platform template" >&2
+                cp "$template_dir/$template" "$config" || exit 1
+            fi
+        fi
         if [ "$shutting_down" != "1" ] && kill -0 "$app_pid" 2>/dev/null; then
             pikpak_log "state restore finished — restarting the gateway"
             kill -TERM "$app_pid" 2>/dev/null
